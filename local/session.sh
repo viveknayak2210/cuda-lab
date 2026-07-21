@@ -6,6 +6,8 @@
 #   ./local/session.sh 01_vecadd    # one kernel
 #   ./local/session.sh --boot       # include first-time bootstrap
 #   ./local/session.sh --stop       # ...and stop the pod when done
+#   PROFILE=1 ./local/session.sh 01_vecadd   # also capture an ncu report
+#   FULL_SANITIZE=1 ./local/session.sh       # add synccheck + racecheck
 #
 # Requires local/pod.env with the connection details RunPod gave you:
 #   HOST=194.26.196.42
@@ -43,17 +45,14 @@ rsync -rlptz --delete \
 if [ "$BOOT" = "1" ]; then
   echo "▸ bootstrap"
   "${SSH[@]}" "root@$HOST" "cd $REMOTE && chmod +x scripts/*.sh && ./scripts/bootstrap.sh"
-  DEADMAN_MIN=300
-  echo "▸ arming deadman (${DEADMAN_MIN}m)"
-  # setsid + </dev/null fully detaches the watchdog into its own session so the
-  # multiplexed SSH channel closes immediately. Without this the backgrounded
-  # job keeps the connection open and session.sh hangs here, never reaching run.
-  "${SSH[@]}" "root@$HOST" \
-    "cd $REMOTE && setsid ./scripts/deadman.sh $DEADMAN_MIN </dev/null >/dev/null 2>&1 &" || true
 fi
 
 echo "▸ run"
-"${SSH[@]}" "root@$HOST" "cd $REMOTE && ./scripts/run.sh $FILTER" || echo "(run reported failures)"
+# Forward the profile/sanitize toggles into the remote shell (env doesn't cross
+# ssh on its own). Both default off -> the fast path.
+"${SSH[@]}" "root@$HOST" \
+  "cd $REMOTE && PROFILE=${PROFILE:-0} FULL_SANITIZE=${FULL_SANITIZE:-0} ./scripts/run.sh $FILTER" \
+  || echo "(run reported failures)"
 
 echo "▸ pull results"
 mkdir -p results

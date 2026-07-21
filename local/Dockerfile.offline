@@ -1,0 +1,18 @@
+# Offline CUDA toolchain that runs NATIVELY on Apple Silicon.
+# nvcc is an ahead-of-time compiler -- it needs no GPU and no driver to turn
+# .cu into PTX/cubin. This gives you instant syntax checking, register counts,
+# and SASS inspection at zero cost and zero latency.
+#
+#   docker build --platform=linux/arm64 -f local/Dockerfile.offline -t cudalab-offline .
+#
+# You CANNOT run kernels here. cudaMalloc will fail. That is fine.
+
+FROM --platform=linux/arm64 nvidia/cuda:12.6.2-devel-ubuntu22.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      make git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /work
+ENV PATH=/usr/local/cuda/bin:$PATH
+CMD ["/bin/bash"]

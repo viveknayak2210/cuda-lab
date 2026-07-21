@@ -1,0 +1,19 @@
+{
+  "files.associations": {
+    "*.cu": "cpp",
+    "*.cuh": "cpp"
+  },
+  "C_Cpp.default.compilerPath": "/usr/bin/clang++",
+  "C_Cpp.default.cppStandard": "c++17",
+  "editor.tabSize": 2,
+  "search.exclude": {
+    "**/bin": true,
+    "**/build": true,
+    "**/.cuda-include": true
+  },
+  "files.watcherExclude": {
+    "**/.cuda-include/**": true,
+    "**/bin/**": true,
+    "**/build/**": true
+  }
+}

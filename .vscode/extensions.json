@@ -1,0 +1,8 @@
+{
+  "recommendations": [
+    "ms-vscode.cpptools",
+    "ms-vscode.makefile-tools",
+    "ms-azuretools.vscode-docker",
+    "nvidia.nsight-vscode-edition"
+  ]
+}

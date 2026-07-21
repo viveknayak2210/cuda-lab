@@ -1,0 +1,10 @@
+bin/
+build/
+results/
+local/pod.env
+*.ncu-rep
+*.nsys-rep
+
+# local dev (machine-specific, not for the pod)
+.cuda-include/
+.DS_Store

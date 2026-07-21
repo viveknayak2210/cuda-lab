@@ -1,0 +1,47 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "cuda: build offline (sm_86)",
+      "detail": "Full type-check of the whole tree in the offline container. No GPU.",
+      "type": "shell",
+      "command": "./local/cudash make ARCH=86",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "cuda: registers (K=01_vecadd)",
+      "detail": "registers/thread + smem/block -- your occupancy inputs.",
+      "type": "shell",
+      "command": "./local/cudash make regs K=${input:kernel}",
+      "problemMatcher": []
+    },
+    {
+      "label": "cuda: PTX (K=01_vecadd)",
+      "type": "shell",
+      "command": "./local/cudash make ptx K=${input:kernel}",
+      "problemMatcher": []
+    },
+    {
+      "label": "cuda: SASS Hopper (sm_90a)",
+      "detail": "Cross-compile + disassemble for Hopper on the Mac. No H100 needed.",
+      "type": "shell",
+      "command": "./local/cudash make sass K=${input:kernel} ARCH=90a",
+      "problemMatcher": []
+    },
+    {
+      "label": "cuda: shell in offline container",
+      "type": "shell",
+      "command": "./local/cudash",
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "kernel",
+      "type": "promptString",
+      "description": "Kernel dir under kernels/ (e.g. 01_vecadd)",
+      "default": "01_vecadd"
+    }
+  ]
+}

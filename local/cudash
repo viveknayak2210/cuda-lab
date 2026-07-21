@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Run any toolchain command against the repo using the local offline container.
+# Put this on your PATH and CUDA compilation feels native on the Mac.
+#
+#   ./local/cudash make ARCH=86            # full build, catches every type error
+#   ./local/cudash make regs K=01_vecadd   # registers/thread + smem/block
+#   ./local/cudash make sass K=01_vecadd ARCH=90a   # read Hopper SASS, no H100
+#   ./local/cudash                          # drop into a shell
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+IMAGE=cudalab-offline
+docker image inspect "$IMAGE" >/dev/null 2>&1 || {
+  echo "building $IMAGE (one time, a few minutes)..."
+  docker build --platform=linux/arm64 -f local/Dockerfile.offline -t "$IMAGE" .
+}
+
+exec docker run --rm -it --platform=linux/arm64 \
+  -v "$PWD:/work" -w /work "$IMAGE" \
+  ${@:-bash}

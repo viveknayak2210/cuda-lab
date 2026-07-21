@@ -19,6 +19,12 @@ NVCC      := nvcc
 NVCCFLAGS := -std=c++17 -O3 -arch=sm_$(ARCH) -lineinfo -Xptxas -v \
              --expt-relaxed-constexpr -Icommon
 
+# Provenance: bake the source version into every binary so bench.csv rows stay
+# traceable. session.sh computes this on the Mac and forwards it over ssh (the
+# synced tree on the pod has no .git); ?= lets that env value win.
+GIT_SHA ?= $(shell git describe --always --dirty 2>/dev/null || echo unknown)
+NVCCFLAGS += -DLAB_GIT_SHA='"$(GIT_SHA)"'
+
 KERNEL_DIRS := $(sort $(notdir $(patsubst %/main.cu,%,$(wildcard kernels/*/main.cu))))
 BINS        := $(addprefix bin/,$(KERNEL_DIRS))
 

@@ -23,15 +23,15 @@ Drive the cuda-lab workflow against a RunPod GPU. The repo lives at `~/coding/cu
 4. Run the battery from the Mac (bootstrap is idempotent, so `--boot` is always safe):
    - No kernel: `./local/session.sh --boot`
    - A kernel: `./local/session.sh --boot KERNEL`
-   - Profiling requested: `PROFILE=1 ./local/session.sh --boot KERNEL`
-   This bootstraps the pod, builds, runs correctness → sanitizers → benchmark (→ profile if asked), and pulls results into `./results/`.
-5. **Profiling caveat.** `ncu` often cannot access GPU performance counters on RunPod — it fails with `ERR_NVGPUCTRPERM`, a host-level driver restriction you cannot change from inside the container. If that happens, do not try to work around it: fall back to the roofline (step 6) and say so plainly.
+   - Also attempt an ncu report: `PROFILE=1 ./local/session.sh --boot KERNEL`
+   This bootstraps the pod, builds, runs correctness → sanitizers → benchmark → **nsys timeline (by default)**, and pulls results into `./results/` — including the `.nsys-rep` and its `.nsys.txt` summary. nsys is installed on the pod automatically if it isn't already present.
+5. **Profilers.** An **nsys** (Nsight Systems) CUDA-activity timeline runs by default and works on RunPod: it traces via CUPTI and needs no GPU perf counters. **ncu** (Nsight Compute) is opt-in (`PROFILE=1`) and usually **fails on RunPod** with `ERR_NVGPUCTRPERM` — a host-level driver restriction you cannot change from inside the container. If ncu fails, do not try to work around it: rely on the nsys timeline + roofline (step 6) and say so plainly.
 6. **Analyze, roofline-first**, and report tightly:
    - **Correctness gate:** timings mean nothing until `test` reports all sizes passed. Never present a benchmark for a kernel that failed correctness.
    - **Registers/thread** per kernel from the BUILD `ptxas info` lines.
-   - **Bandwidth & % of achievable peak** per size/variant from `results/bench.csv` and the run log.
-   - **Bound analysis:** ~100% of peak bandwidth ⇒ memory-bound (occupancy/register tuning won't help — stop). Low bandwidth well under peak ⇒ suspect coalescing/occupancy; only then is a profiler worth it.
-   - If a `.ncu-rep`/`.nsys-rep` was produced, point the user to open it in the matching Nsight app on the Mac.
+   - **Bandwidth & % of achievable peak** per size/variant from `results/bench.csv` and the run log. These are the *untraced* numbers — read the roofline off these, never off the nsys traced run (tracing inflates the small sizes).
+   - **Bound analysis:** ~100% of peak bandwidth ⇒ memory-bound (occupancy/register tuning won't help — stop). Low bandwidth well under peak ⇒ suspect coalescing/occupancy; only then is ncu worth attempting.
+   - **nsys timeline:** the kernel + memcpy summary is in `results/KERNEL.nsys.txt` (and the run log); point the user to open `results/KERNEL.nsys-rep` in **Nsight Systems.app**. Watch for H2D/D2H transfer time dwarfing kernel time — the end-to-end "is it worth offloading" signal. If `PROFILE=1` produced a `.ncu-rep`, open it in Nsight Compute.app.
 7. Remind the user to **terminate the pod from the RunPod UI** when done — there is no auto-stop.
 
-Report: GPU · correctness · sanitizer status · bandwidth/roofline table · your bound conclusion. Keep it concise.
+Report: GPU · correctness · sanitizer status · bandwidth/roofline table · nsys timeline (kernel + transfer summary) · your bound conclusion. Keep it concise.

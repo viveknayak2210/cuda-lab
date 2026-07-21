@@ -6,7 +6,7 @@
 #   ./local/session.sh 01_vecadd    # one kernel
 #   ./local/session.sh --boot       # include first-time bootstrap
 #   ./local/session.sh --stop       # ...and stop the pod when done
-#   PROFILE=1 ./local/session.sh 01_vecadd   # also capture an ncu report
+#   PROFILE=1 ./local/session.sh 01_vecadd   # also try an ncu report (nsys runs either way)
 #   FULL_SANITIZE=1 ./local/session.sh       # add synccheck + racecheck
 #
 # Requires local/pod.env with the connection details RunPod gave you:
@@ -49,12 +49,17 @@ fi
 
 echo "▸ run"
 # Forward the profile/sanitize toggles into the remote shell (env doesn't cross
-# ssh on its own). Both default off -> the fast path.
+# ssh on its own). Both default off -> the fast path. GIT_SHA is computed here
+# because the synced tree on the pod has no .git; make bakes it into the
+# binaries so every bench.csv row records the source version that produced it.
+GIT_SHA=$(git describe --always --dirty 2>/dev/null || echo unknown)
 "${SSH[@]}" "root@$HOST" \
-  "cd $REMOTE && PROFILE=${PROFILE:-0} FULL_SANITIZE=${FULL_SANITIZE:-0} ./scripts/run.sh $FILTER" \
+  "cd $REMOTE && GIT_SHA=$GIT_SHA PROFILE=${PROFILE:-0} FULL_SANITIZE=${FULL_SANITIZE:-0} NSYS_TRACE=${NSYS_TRACE:-1} ./scripts/run.sh $FILTER" \
   || echo "(run reported failures)"
 
 echo "▸ pull results"
+# Pulls everything the run wrote, including the default nsys timeline
+# (results/<kernel>.nsys-rep + .nsys.txt) and any opt-in .ncu-rep.
 mkdir -p results
 rsync -rlptz -e "${SSH[*]}" "root@$HOST:$REMOTE/results/" ./results/
 
@@ -64,4 +69,4 @@ if [ "$STOP" = "1" ]; then
     echo "  !! could not auto-stop -- CHECK THE DASHBOARD"
 fi
 
-echo "▸ done. reports in ./results/ -- open the .ncu-rep in Nsight Compute.app"
+echo "▸ done. results in ./results/ -- open the .nsys-rep in Nsight Systems.app (.ncu-rep in Nsight Compute.app if you ran PROFILE=1)."

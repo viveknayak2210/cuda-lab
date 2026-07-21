@@ -3,9 +3,17 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <ctime>
 #include <functional>
 #include <string>
 #include <vector>
+
+// Injected by the Makefile (-DLAB_GIT_SHA=...) so every CSV row records which
+// source version produced it. "unknown" when built outside the repo.
+#ifndef LAB_GIT_SHA
+#define LAB_GIT_SHA "unknown"
+#endif
 
 namespace lab {
 
@@ -80,47 +88,80 @@ inline bool compare(const float* got, const float* want, int n,
 // ---------------------------------------------------------------------------
 // Achievable bandwidth probe. Compare against THIS, not the spec-sheet number:
 // the spec number is unreachable and makes every kernel look worse than it is.
-// Cached to results/peak_bw.txt so it is measured once per pod.
+//
+// A baseline must be >= anything measured against it, so probe BOTH common
+// stream mixes (1R+1W scale, 2R+1W triad -- read/write ratio shifts what the
+// memory system sustains) across several grid sizes, and keep the best.
+// Cached to results/peak_bw.txt keyed by GPU name, so a different card on the
+// next pod re-measures automatically instead of poisoning every %-of-peak.
 // ---------------------------------------------------------------------------
-__global__ void _triad(float* __restrict__ dst, const float* __restrict__ src,
-                       size_t n) {
+__global__ void _bw_scale(float* __restrict__ dst, const float* __restrict__ src,
+                          size_t n) {
   size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x;
   size_t stride = (size_t)gridDim.x * blockDim.x;
   for (; i < n; i += stride) dst[i] = src[i] * 2.0f;
 }
 
+__global__ void _bw_triad(float* __restrict__ dst, const float* __restrict__ a,
+                          const float* __restrict__ b, size_t n) {
+  size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x;
+  size_t stride = (size_t)gridDim.x * blockDim.x;
+  for (; i < n; i += stride) dst[i] = a[i] + 2.0f * b[i];
+}
+
 inline float measure_peak_bw_gbs() {
+  int dev = 0;
+  cudaDeviceProp p{};
+  CUDA_CHECK(cudaGetDevice(&dev));
+  CUDA_CHECK(cudaGetDeviceProperties(&p, dev));
+
+  // Cache format: "<gbs>\n<gpu name>\n". A bare number (the old format) or a
+  // name mismatch both fall through to a fresh measurement.
   if (FILE* f = std::fopen("results/peak_bw.txt", "r")) {
     float cached = 0.f;
-    int ok = std::fscanf(f, "%f", &cached);
+    char name[256] = {0};
+    int ok = std::fscanf(f, "%f ", &cached);
+    char* got = std::fgets(name, sizeof(name), f);
     std::fclose(f);
-    if (ok == 1 && cached > 0.f) return cached;
+    if (ok == 1 && cached > 0.f && got) {
+      name[std::strcspn(name, "\n")] = 0;
+      if (std::strcmp(name, p.name) == 0) return cached;
+    }
   }
-  const size_t n = 1ull << 26;  // 256 MB in, 256 MB out
-  float *a = nullptr, *b = nullptr;
+
+  const size_t n = 1ull << 26;  // 256 MB per buffer
+  float *a = nullptr, *b = nullptr, *c = nullptr;
   CUDA_CHECK(cudaMalloc(&a, n * sizeof(float)));
   CUDA_CHECK(cudaMalloc(&b, n * sizeof(float)));
+  CUDA_CHECK(cudaMalloc(&c, n * sizeof(float)));
   CUDA_CHECK(cudaMemset(a, 0, n * sizeof(float)));
+  CUDA_CHECK(cudaMemset(b, 0, n * sizeof(float)));
 
-  int dev = 0, sms = 0;
-  CUDA_CHECK(cudaGetDevice(&dev));
-  CUDA_CHECK(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev));
-  const int block = 256, grid = sms * 32;
-
-  float ms = time_kernel_ms([&] { _triad<<<grid, block>>>(b, a, n); }, 3, 20);
+  const int block = 256;
+  float best = 0.f;
+  for (int mult : {16, 32, 64}) {
+    const int grid = p.multiProcessorCount * mult;
+    float ms = time_kernel_ms([&] { _bw_scale<<<grid, block>>>(c, a, n); }, 3, 10);
+    best = std::max(best, float(2.0 * n * sizeof(float)) / (ms * 1e6f));
+    ms = time_kernel_ms([&] { _bw_triad<<<grid, block>>>(c, a, b, n); }, 3, 10);
+    best = std::max(best, float(3.0 * n * sizeof(float)) / (ms * 1e6f));
+  }
   CUDA_CHECK(cudaFree(a));
   CUDA_CHECK(cudaFree(b));
+  CUDA_CHECK(cudaFree(c));
 
-  float gbs = (2.0f * n * sizeof(float)) / (ms * 1e6f);
   if (FILE* f = std::fopen("results/peak_bw.txt", "w")) {
-    std::fprintf(f, "%.3f\n", gbs);
+    std::fprintf(f, "%.3f\n%s\n", best, p.name);
     std::fclose(f);
   }
-  return gbs;
+  return best;
 }
 
 // ---------------------------------------------------------------------------
 // One row of the results CSV. Append-only so runs accumulate across sessions.
+// The trailing provenance columns (gpu, sm, sha, date) are what let you trust
+// a row three pods and six weeks later. They come last so old 7-column rows
+// still line up.
 // ---------------------------------------------------------------------------
 inline void record(const std::string& kernel, const std::string& variant, int n,
                    float ms, double bytes_moved, double flops = 0.0) {
@@ -128,13 +169,26 @@ inline void record(const std::string& kernel, const std::string& variant, int n,
   if (!f) return;
   std::fseek(f, 0, SEEK_END);
   if (std::ftell(f) == 0)
-    std::fprintf(f, "kernel,variant,n,ms,gbs,gflops,pct_peak_bw\n");
+    std::fprintf(f, "kernel,variant,n,ms,gbs,gflops,pct_peak_bw,gpu,sm,sha,date\n");
 
   static float peak = measure_peak_bw_gbs();
+  static cudaDeviceProp prop = [] {
+    cudaDeviceProp q{};
+    int d = 0;
+    CUDA_CHECK(cudaGetDevice(&d));
+    CUDA_CHECK(cudaGetDeviceProperties(&q, d));
+    return q;
+  }();
+  char date[16];
+  std::time_t t = std::time(nullptr);
+  std::strftime(date, sizeof(date), "%Y-%m-%d", std::localtime(&t));
+
   double gbs = bytes_moved / (ms * 1e6);
   double gflops = flops / (ms * 1e6);
-  std::fprintf(f, "%s,%s,%d,%.6f,%.2f,%.2f,%.1f\n", kernel.c_str(),
-               variant.c_str(), n, ms, gbs, gflops, 100.0 * gbs / peak);
+  std::fprintf(f, "%s,%s,%d,%.6f,%.2f,%.2f,%.1f,%s,%d%d,%s,%s\n",
+               kernel.c_str(), variant.c_str(), n, ms, gbs, gflops,
+               100.0 * gbs / peak, prop.name, prop.major, prop.minor,
+               LAB_GIT_SHA, date);
   std::fclose(f);
 
   std::printf("  %-14s n=%-9d %8.4f ms  %7.1f GB/s  %5.1f%% of peak\n",
@@ -149,6 +203,34 @@ inline void print_device_banner() {
   std::printf("== %s | sm_%d%d | %d SMs | %.1f GB | %zu KB smem/block ==\n",
               p.name, p.major, p.minor, p.multiProcessorCount,
               p.totalGlobalMem / 1e9, p.sharedMemPerBlockOptin / 1024);
+}
+
+// ---------------------------------------------------------------------------
+// Occupancy: closes the loop from `ptxas -v`. Registers/thread and smem/block
+// are the INPUTS; this prints the OUTPUT that matters -- how many blocks each
+// SM can actually hold at this block size, and what fraction of the SM's
+// thread capacity that is. Pass dyn_smem if the kernel launches with dynamic
+// shared memory. Costs nothing: pure driver arithmetic, no kernel launch.
+// ---------------------------------------------------------------------------
+template <typename Kernel>
+inline void report_occupancy(const char* name, Kernel kernel, int block,
+                             size_t dyn_smem = 0) {
+  int dev = 0;
+  cudaDeviceProp p{};
+  CUDA_CHECK(cudaGetDevice(&dev));
+  CUDA_CHECK(cudaGetDeviceProperties(&p, dev));
+  cudaFuncAttributes a{};
+  CUDA_CHECK(cudaFuncGetAttributes(&a, kernel));
+  int blocks = 0;
+  CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocks, kernel,
+                                                           block, dyn_smem));
+  int threads = blocks * block;
+  std::printf(
+      "  %-14s block=%-4d %3d regs %6zu B smem -> %2d blocks/SM, %4d/%d "
+      "threads (%.0f%% occupancy)\n",
+      name, block, a.numRegs, a.sharedSizeBytes + dyn_smem, blocks, threads,
+      p.maxThreadsPerMultiProcessor,
+      100.0 * threads / p.maxThreadsPerMultiProcessor);
 }
 
 }  // namespace lab

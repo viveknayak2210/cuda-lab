@@ -16,8 +16,11 @@ then from your Mac:
 
 ```bash
 ./local/session.sh --boot        # first session on a fresh pod
-./local/session.sh               # every session after
+./local/session.sh               # every session after (incl. nsys timeline)
 ./local/session.sh 01_vecadd     # one kernel while iterating
+NSYS_TRACE=0 ./local/session.sh 01_vecadd # skip the nsys pass for a tighter loop
+PROFILE=1 ./local/session.sh 01_vecadd    # also try ncu (usually blocked on RunPod)
+FULL_SANITIZE=1 ./local/session.sh        # + synccheck/racecheck (shared-mem kernels)
 ./local/session.sh --stop        # last run of the day
 ```
 
@@ -26,34 +29,39 @@ it breaks.
 
 ### What runs, in order
 
+Phases 1–2 are `bootstrap.sh` (only with `--boot`; idempotent, ~10s). The rest
+are `run.sh`, every session.
+
 | Phase | Command | Why it's in this order |
 |---|---|---|
 | 1. Identify | `nvidia-smi --query-gpu=compute_cap` | You cannot trust which card you got. Everything downstream keys off `sm_XX`. |
 | 2. Smoke | compile + run a 3-line kernel | If this fails, stop immediately — you have a broken pod, not a broken kernel. Costs 5 seconds. |
 | 3. Build | `make -j$(nproc)` | `-Xptxas -v` prints registers/thread and smem/block. **Read these.** They're your occupancy inputs and you can't get them from the profiler as directly. |
 | 4. Correctness | `./bin/K test` | Awkward-size sweep: `0, 1, 31, 32, 33, 63, 64, 65, …, 1048573 (prime), 4M`. Never benchmark a kernel that hasn't passed. |
-| 5. Sanitize | `compute-sanitizer` ×4 | `memcheck` → OOB/leaks. `initcheck` → reads of uninitialized device memory. `synccheck` → illegal `__syncthreads()`. `racecheck` → shared-memory races. Racecheck is slow and is the one that finds bugs you can't reproduce. |
+| 5. Sanitize | `compute-sanitizer` ×2 | `memcheck` → OOB/leaks. `initcheck` → reads of uninitialized device memory. `FULL_SANITIZE=1` adds `synccheck` (illegal `__syncthreads()`) and `racecheck` (shared-memory races) — racecheck is slow and only pays off on shared-memory kernels, but it finds the bugs you can't reproduce. |
 | 6. Benchmark | `./bin/K bench` | Median of 50, after 5 warmups. CUDA events, not wall clock. |
-| 7. Profile | `nsys` then `ncu` | `nsys` first (where does time go across the whole program), `ncu` second (why is *this* kernel slow). |
-| 8. Package | `tar czf` | One artifact to pull back. |
+| 7. Timeline | `nsys profile --trace=cuda` (default; `NSYS_TRACE=0` skips) | Whole-program view: kernel + memcpy summary, H2D/D2H vs. compute. Traces via CUPTI, needs **no** perf counters, so it works on locked-down hosts like RunPod. It's a separate traced run — never read timings off it; the clean numbers come from phase 6. |
+| 8. Profile (opt-in) | `PROFILE=1` → `ncu --set basic` | Off by default — the expensive phase, installed lazily. Caveat: RunPod hosts usually block GPU counters (`ERR_NVGPUCTRPERM`); when that happens, don't fight it — the nsys timeline + roofline numbers are your analysis. |
+| 9. Package | `tar czf` | One artifact to pull back. |
 
 ### Rules that keep the meter short
 
-**Arm the dead-man's switch before anything else.** `bootstrap.sh` starts
-`deadman.sh 45` automatically. A forgotten A4000 for a week is $28 — more than
-your entire planned month.
+**There is no auto-stop — shutdown is on you.** End the day with
+`./local/session.sh --stop`, then verify in the RunPod dashboard anyway. A
+forgotten A4000 for a week is $28 — more than your entire planned month.
 
-**Never profile and think at the same time.** Collect `.ncu-rep`, kill the pod,
-then spend two hours reading it on the Mac in Nsight Compute. Analysis is free;
-the pod is not.
+**Never profile and think at the same time.** Collect `.nsys-rep`/`.ncu-rep`,
+kill the pod, then spend two hours reading them on the Mac in the Nsight apps.
+Analysis is free; the pod is not.
 
 **Batch your hypotheses.** Don't spin up to test one idea. Queue five kernel
 variants locally, run them in one session, compare the CSV afterwards. The
 per-session overhead (boot, image pull, bootstrap) is fixed, so five experiments
 per session costs a fifth as much overhead as one.
 
-**Use `SKIP_PROFILE=1` while iterating on correctness.** Profiling is the
-expensive phase; you don't need it until the kernel is right.
+**Leave profiling off while iterating on correctness.** It's opt-in
+(`PROFILE=1`) precisely because it's the expensive phase; you don't need it
+until the kernel is right.
 
 > A reality check on the money: at $0.17/hr an A4000 costs **0.28 cents per
 > minute**. A sloppy 40-minute session costs 11 cents. You are not really
@@ -91,10 +99,11 @@ You cannot run anything. `cudaMalloc` fails. That is the correct trade.
 
 ### Viewers
 
-Install both host GUIs on the Mac — Nsight Compute has a native macOS arm64
-build, and Nsight Systems ships a macOS host. They open the `.ncu-rep` and
-`.nsys-rep` files `session.sh` pulls back. This is where you'll spend most of
-your actual learning hours, at zero cost.
+Install both host GUIs on the Mac. Nsight Systems opens the `.nsys-rep`
+timeline every session produces by default; Nsight Compute (native macOS arm64
+build) opens the `.ncu-rep` files from `PROFILE=1` runs on pods that allow
+perf counters. This is where you'll spend most of your actual learning hours,
+at zero cost.
 
 ### Local setup checklist
 
@@ -140,10 +149,12 @@ there. This turns "set up the pod" from minutes into zero.
 
 ### 2. `rsync` over a multiplexed SSH connection
 
-`session.sh` uses `rsync -az --delete` with `ControlMaster`/`ControlPersist`,
-so the TCP+auth handshake happens once and subsequent calls reuse it. For a
-source tree of a few hundred KB, a sync is well under a second. Excluding
-`.git`, `bin`, `build`, and `results` keeps it that way.
+`session.sh` uses `rsync -rlptz --delete` (not `-a`: the RunPod volume forbids
+`chown`, and preserving root ownership breaks the pull back to the Mac) with
+`ControlMaster`/`ControlPersist`, so the TCP+auth handshake happens once and
+subsequent calls reuse it. For a source tree of a few hundred KB, a sync is
+well under a second. Excluding `.git`, `bin`, `build`, and `results` keeps it
+that way.
 
 ```bash
 # ~/.ssh/config — add this so you never paste a long ssh command again

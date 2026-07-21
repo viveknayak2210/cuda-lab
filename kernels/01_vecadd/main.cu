@@ -104,6 +104,9 @@ static int run_tests() {
 
 static void run_bench() {
   lab::print_device_banner();
+  // ptxas -v gave you regs/thread at build time; this is what they buy you.
+  lab::report_occupancy("naive", vecadd_naive, 256);
+  lab::report_occupancy("gridstride", vecadd_gridstride, 256);
   for (int n : {1 << 20, 1 << 24, 1 << 26}) {
     Buffers buf;
     buf.alloc(n);

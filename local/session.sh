@@ -32,15 +32,19 @@ for a in "$@"; do
 done
 
 echo "▸ sync up"
-rsync -az --delete \
+# -rlptz (not -a): skip owner/group preservation. The RunPod volume forbids
+# chown, and preserving root ownership also fails on the pull back to the Mac.
+# Exclude .cuda-include (Mac-only IntelliSense headers) and editor cruft.
+rsync -rlptz --delete \
   --exclude '.git' --exclude 'bin' --exclude 'build' --exclude 'results' \
+  --exclude '.cuda-include' --exclude '.vscode' --exclude '.DS_Store' \
   -e "${SSH[*]}" ./ "root@$HOST:$REMOTE/"
 
 if [ "$BOOT" = "1" ]; then
   echo "▸ bootstrap"
   "${SSH[@]}" "root@$HOST" "cd $REMOTE && chmod +x scripts/*.sh && ./scripts/bootstrap.sh"
   echo "▸ arming deadman (45m)"
-  "${SSH[@]}" "root@$HOST" "cd $REMOTE && nohup ./scripts/deadman.sh 45 >/dev/null 2>&1 &" || true
+  "${SSH[@]}" "root@$HOST" "cd $REMOTE && nohup ./scripts/deadman.sh 300 >/dev/null 2>&1 &" || true
 fi
 
 echo "▸ run"
@@ -48,7 +52,7 @@ echo "▸ run"
 
 echo "▸ pull results"
 mkdir -p results
-rsync -az -e "${SSH[*]}" "root@$HOST:$REMOTE/results/" ./results/
+rsync -rlptz -e "${SSH[*]}" "root@$HOST:$REMOTE/results/" ./results/
 
 if [ "$STOP" = "1" ]; then
   echo "▸ stopping pod"

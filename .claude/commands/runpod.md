@@ -7,7 +7,7 @@ Drive the cuda-lab workflow against a RunPod GPU. The repo lives at `~/coding/cu
 
 ## Input (`$ARGUMENTS`)
 
-- **Required — the pod's host and port**, as `HOST:PORT` or `HOST PORT`. Take these from RunPod's **"SSH over exposed TCP" / Direct TCP** entry. Always use that endpoint, never `ssh.runpod.io`: rsync needs SCP/SFTP, which the proxy endpoint does not provide.
+- **Required — the pod's host and port**, as `HOST:PORT` or `HOST PORT`. Take these from RunPod's **"SSH over exposed TCP" / Direct TCP** entry. Always use that endpoint, never `ssh.runpod.io`: the proxy endpoint only gives you an interactive shell, not the pod's full SSH server that the `rsync`/`scp` file transfer in this workflow needs.
 - **Optional — a kernel to focus on**: a folder name like `03_matmul` or a path like `kernels/03_matmul/main.cu`. Reduce any path to its kernel-folder name. If the user also says "profile"/"analyze", treat profiling as requested.
 
 ## Steps

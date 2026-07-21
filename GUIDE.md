@@ -153,8 +153,8 @@ there. This turns "set up the pod" from minutes into zero.
 `chown`, and preserving root ownership breaks the pull back to the Mac) with
 `ControlMaster`/`ControlPersist`, so the TCP+auth handshake happens once and
 subsequent calls reuse it. For a source tree of a few hundred KB, a sync is
-well under a second. Excluding `.git`, `bin`, `build`, and `results` keeps it
-that way.
+well under a second. Excluding `.git`, `bin`, `build`, `results`, and the
+Mac-only `.cuda-include`/`.vscode` trees keeps it that way.
 
 ```bash
 # ~/.ssh/config — add this so you never paste a long ssh command again
@@ -185,7 +185,7 @@ live bidirectional sync on file save:
 
 ```bash
 mutagen sync create --name=lab \
-  --ignore=.git,bin,build \
+  --ignore=.git,bin,build,results,.cuda-include,.vscode \
   ./ root@194.26.196.42:22041:/workspace/cuda-lab
 ```
 

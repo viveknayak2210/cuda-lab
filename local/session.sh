@@ -43,8 +43,13 @@ rsync -rlptz --delete \
 if [ "$BOOT" = "1" ]; then
   echo "▸ bootstrap"
   "${SSH[@]}" "root@$HOST" "cd $REMOTE && chmod +x scripts/*.sh && ./scripts/bootstrap.sh"
-  echo "▸ arming deadman (45m)"
-  "${SSH[@]}" "root@$HOST" "cd $REMOTE && nohup ./scripts/deadman.sh 300 >/dev/null 2>&1 &" || true
+  DEADMAN_MIN=300
+  echo "▸ arming deadman (${DEADMAN_MIN}m)"
+  # setsid + </dev/null fully detaches the watchdog into its own session so the
+  # multiplexed SSH channel closes immediately. Without this the backgrounded
+  # job keeps the connection open and session.sh hangs here, never reaching run.
+  "${SSH[@]}" "root@$HOST" \
+    "cd $REMOTE && setsid ./scripts/deadman.sh $DEADMAN_MIN </dev/null >/dev/null 2>&1 &" || true
 fi
 
 echo "▸ run"

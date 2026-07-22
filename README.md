@@ -2,7 +2,7 @@
 
 Personal CUDA kernel lab focused on minimizing GPU usage.
 
-Author and type-check kernels offline on a Mac, then each paid RunPod session starts with a *single command* that runs a fixed pipeline — build → correctness → sanitizers → benchmark → profile , then pulls artifacts back.
+Author and type-check kernels offline on a Mac, then each paid RunPod session starts with a *single command* that runs a fixed pipeline — build → correctness → sanitizers → benchmark → profile, then pulls artifacts back.
 
 ---
 

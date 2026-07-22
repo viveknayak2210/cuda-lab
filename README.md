@@ -84,7 +84,8 @@ local/cudash              run any toolchain cmd in the offline nvcc container
 local/Dockerfile.offline  ARM64 CUDA toolkit, no GPU/driver needed
 local/pod.env.example     connection template (copy to local/pod.env)
 GUIDE.md                  the full workflow: why the pod is a batch job
-.claude/commands/runpod.md  Claude Code `/runpod HOST:PORT` — drives a whole session
+.claude/commands/runpod_setup.md  Claude Code `/runpod_setup HOST:PORT` — first-time boot + run
+.claude/commands/runpod_run.md    Claude Code `/runpod_run [kernel]` — repeat run, no re-bootstrap
 ```
 
 ---

@@ -8,3 +8,6 @@ local/pod.env
 # local dev (machine-specific, not for the pod)
 .cuda-include/
 .DS_Store
+
+# personal
+course_plan.md

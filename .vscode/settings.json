@@ -7,6 +7,34 @@
   "C_Cpp.default.compilerPath": "/usr/bin/clang++",
   "C_Cpp.default.cppStandard": "c++17",
   "editor.tabSize": 2,
+
+  // No autocomplete while learning: recall the API yourself, don't pick it off
+  // a list. Ctrl+Space still summons the popup on demand, and hover docs stay.
+  "editor.inlineSuggest.enabled": false,
+  "[cuda]": {
+    "editor.quickSuggestions": {
+      "other": false,
+      "comments": false,
+      "strings": false
+    },
+    "editor.suggestOnTriggerCharacters": false,
+    "editor.wordBasedSuggestions": "off",
+    "editor.parameterHints.enabled": false,
+    "editor.acceptSuggestionOnEnter": "off",
+    "editor.tabCompletion": "off"
+  },
+  "[cpp]": {
+    "editor.quickSuggestions": {
+      "other": false,
+      "comments": false,
+      "strings": false
+    },
+    "editor.suggestOnTriggerCharacters": false,
+    "editor.wordBasedSuggestions": "off",
+    "editor.parameterHints.enabled": false,
+    "editor.acceptSuggestionOnEnter": "off",
+    "editor.tabCompletion": "off"
+  },
   "search.exclude": {
     "**/bin": true,
     "**/build": true,

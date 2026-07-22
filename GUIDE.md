@@ -80,9 +80,10 @@ For each kernel, in this order:
 3. **Grid/block mapping on paper** — how does thread `(bx, tx)` map to data
    index? Draw it. Most first-kernel bugs are here.
 4. **The `.cu` kernel** — type-check it with `./local/cudash make`.
-5. **The awkward-size list** for this specific kernel — the defaults in
-   `harness.cuh` cover 1-D; add your own for 2-D tiling (non-square, non-multiple
-   of tile size, single row, single column).
+5. **The awkward-size list** for this specific kernel — `runner.cuh` ships
+   `lab::awkward_1d()` and `lab::awkward_2d()`; append your own to
+   `spec.test_shapes` when the kernel has its own contract (fragment multiples,
+   ragged tiles, degenerate rows/columns).
 6. **A written prediction** — arithmetic intensity, and your guess at
    %-of-peak-bandwidth. Write it in a comment. Then go measure and see how
    wrong you were. This is the highest-value habit in the whole workflow.

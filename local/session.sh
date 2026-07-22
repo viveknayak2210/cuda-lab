@@ -62,7 +62,24 @@ echo "▸ pull results"
 # Pulls everything the run wrote, including the default nsys timeline
 # (results/<kernel>.nsys-rep + .nsys.txt) and any opt-in .ncu-rep.
 mkdir -p results
+# bench.csv is the ONE file that must survive the pull. A pod only ever holds
+# the rows it produced itself, so a straight rsync silently replaces the local
+# history the moment you move to a new pod. Stash it, pull, then merge: local
+# rows first, then any pod row not already present (exact-line dedup, which is
+# also what makes a second pull of the same pod idempotent).
+BENCH=results/bench.csv
+STASH=$(mktemp -d)
+trap 'rm -rf "$STASH"' EXIT
+[ -f "$BENCH" ] && cp "$BENCH" "$STASH/local.csv"
+
 rsync -rlptz -e "${SSH[*]}" "root@$HOST:$REMOTE/results/" ./results/
+
+if [ -s "$STASH/local.csv" ] && [ -f "$BENCH" ]; then
+  { cat "$STASH/local.csv"; tail -n +2 "$BENCH"; } \
+    | awk 'NR==1 || !seen[$0]++' > "$STASH/merged.csv"
+  mv "$STASH/merged.csv" "$BENCH"
+  echo "  bench.csv: $(($(wc -l < "$BENCH") - 1)) rows total"
+fi
 
 if [ "$STOP" = "1" ]; then
   echo "▸ stopping pod"

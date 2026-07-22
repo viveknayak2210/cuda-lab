@@ -32,7 +32,7 @@ BINS        := $(addprefix bin/,$(KERNEL_DIRS))
 .PHONY: all clean list
 all: $(BINS)
 
-bin/%: kernels/%/main.cu common/check.cuh common/harness.cuh
+bin/%: kernels/%/main.cu $(wildcard common/*.cuh)
 	@mkdir -p bin results
 	$(NVCC) $(NVCCFLAGS) $< -o $@
 

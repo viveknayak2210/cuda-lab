@@ -52,7 +52,7 @@ Each `bench.csv` row is stamped with GPU, `sm`, git SHA, and date.
 
 ## Kernels
 
-Each kernel is one self-contained `kernels/NN_name/main.cu` with three run modes — `test` (correctness), `bench` (roofline), `profile` (single launch for nsys/ncu). Makefile auto-discovers `kernels/*/main.cu`.
+Each kernel is one `kernels/NN_name/main.cu` holding just the lesson — a CPU reference, the `__global__` variants, and the `Spec` that wires them up. `common/runner.cuh` supplies the rest: buffers, the awkward-size sweep, timing, and three run modes — `test` (correctness), `bench` (roofline), `profile` (single launch for nsys/ncu). Makefile auto-discovers `kernels/*/main.cu`.
 
 | Kernel | Lesson | Variants |
 |---|---|---|
@@ -64,10 +64,12 @@ Each kernel is one self-contained `kernels/NN_name/main.cu` with three run modes
 ## Layout
 
 ```
-kernels/NN_name/main.cu   one kernel: CPU ref + variants + test/bench/profile
+kernels/NN_name/main.cu   one kernel: CPU ref + __global__ variants + Spec
 common/check.cuh          CUDA_CHECK / KERNEL_CHECK / ceil_div
-common/harness.cuh        awkward sizes, event timing, compare, peak-bw probe,
-                          CSV record (w/ provenance), occupancy report
+common/harness.cuh        event timing, compare, peak-bw probe, CSV record
+                          (w/ provenance), occupancy report
+common/runner.cuh         Shape/Args/Spec, buffers, awkward-size batteries,
+                          the test/bench/profile driver
 Makefile                  arch auto-detect; auto-discovers kernels; ptx/sass/regs
 scripts/bootstrap.sh      one-time pod setup (identify + smoke)
 scripts/run.sh            the battery
@@ -76,6 +78,7 @@ local/cudash              run any toolchain cmd in the offline nvcc container
 local/Dockerfile.offline  ARM64 CUDA toolkit, no GPU/driver needed
 local/pod.env.example     connection template (copy to local/pod.env)
 GUIDE.md                  the full workflow: why the pod is a batch job
+CLAUDE.md                 repo contract for agents: rules, layout, conventions
 .claude/commands/runpod_setup.md  Claude Code `/runpod_setup HOST:PORT` — first-time boot + run
 .claude/commands/runpod_run.md    Claude Code `/runpod_run [kernel]` — repeat run, no re-bootstrap
 ```

@@ -15,21 +15,10 @@
 #define LAB_GIT_SHA "unknown"
 #endif
 
-namespace lab {
+// The instruments: timing, comparison, the achievable-bandwidth probe, the CSV
+// row and the occupancy report. The driver that calls them is runner.cuh.
 
-// ---------------------------------------------------------------------------
-// The awkward-size battery. Every kernel gets run against all of these before
-// it is allowed to be "correct". Covers: empty, single, sub-warp, exact warp,
-// warp+1, exact block, block+1, multi-block ragged, and a large prime.
-// ---------------------------------------------------------------------------
-inline const std::vector<int>& awkward_sizes() {
-  static const std::vector<int> v = {
-      0,    1,     2,     31,    32,     33,     63,     64,     65,
-      127,  128,   129,   255,   256,    257,    511,    512,    513,
-      1023, 1024,  1025,  4095,  4096,   4097,   100000, 1048573 /* prime */,
-      1 << 22};
-  return v;
-}
+namespace lab {
 
 // ---------------------------------------------------------------------------
 // Timing: warmup, then N repeats, report the median (not the mean -- one

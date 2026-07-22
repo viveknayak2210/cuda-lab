@@ -1,7 +1,8 @@
 {
   "files.associations": {
-    "*.cu": "cpp",
-    "*.cuh": "cpp"
+    "*.cpp": "cpp",
+    "*.cu": "cuda",
+    "*.cuh": "cuda"
   },
   "C_Cpp.default.compilerPath": "/usr/bin/clang++",
   "C_Cpp.default.cppStandard": "c++17",

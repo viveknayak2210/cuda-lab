@@ -10,14 +10,14 @@
       "problemMatcher": ["$gcc"]
     },
     {
-      "label": "cuda: registers (K=01_vecadd)",
+      "label": "cuda: registers (K=01_vecadd_ai)",
       "detail": "registers/thread + smem/block -- your occupancy inputs.",
       "type": "shell",
       "command": "./local/cudash make regs K=${input:kernel}",
       "problemMatcher": []
     },
     {
-      "label": "cuda: PTX (K=01_vecadd)",
+      "label": "cuda: PTX (K=01_vecadd_ai)",
       "type": "shell",
       "command": "./local/cudash make ptx K=${input:kernel}",
       "problemMatcher": []
@@ -40,8 +40,8 @@
     {
       "id": "kernel",
       "type": "promptString",
-      "description": "Kernel dir under kernels/ (e.g. 01_vecadd)",
-      "default": "01_vecadd"
+      "description": "Kernel dir under kernels/ (e.g. 01_vecadd_ai)",
+      "default": "01_vecadd_ai"
     }
   ]
 }

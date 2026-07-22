@@ -2,8 +2,8 @@
 #
 #   make            build everything
 #   make ARCH=90a   force an arch (e.g. compile Hopper code on the A4000)
-#   make ptx K=01_vecadd    dump PTX
-#   make sass K=01_vecadd   dump SASS
+#   make ptx K=01_vecadd_ai    dump PTX
+#   make sass K=01_vecadd_ai   dump SASS
 
 # Detect compute capability from the live GPU. No GPU -> the pipeline yields an
 # empty string and the ifeq below falls back to 86 (A4000/A5000/3090) so the

@@ -15,9 +15,9 @@ Paste connection details into `local/pod.env` from your Mac:
 ```bash
 ./local/session.sh --boot        # first session on a fresh pod
 ./local/session.sh               # every session after (incl. nsys timeline)
-./local/session.sh 01_vecadd     # one kernel while iterating
-NSYS_TRACE=0 ./local/session.sh 01_vecadd # skip the nsys pass for a tighter loop
-PROFILE=1 ./local/session.sh 01_vecadd    # also try ncu (usually blocked on RunPod)
+./local/session.sh 01_vecadd_ai     # one kernel while iterating
+NSYS_TRACE=0 ./local/session.sh 01_vecadd_ai # skip the nsys pass for a tighter loop
+PROFILE=1 ./local/session.sh 01_vecadd_ai    # also try ncu (usually blocked on RunPod)
 FULL_SANITIZE=1 ./local/session.sh        # + synccheck/racecheck (shared-mem kernels)
 ./local/session.sh --stop        # last run of the day
 ```
@@ -48,8 +48,8 @@ your M4:
 ```bash
 docker build --platform=linux/arm64 -f local/Dockerfile.offline -t cudalab-offline .
 ./local/cudash make ARCH=86              # full type-check of the whole tree  
-./local/cudash make regs K=01_vecadd     # registers/thread, smem/block
-./local/cudash make sass K=01_vecadd ARCH=90a   # read Hopper SASS, no H100 needed
+./local/cudash make regs K=01_vecadd_ai     # registers/thread, smem/block
+./local/cudash make sass K=01_vecadd_ai ARCH=90a   # read Hopper SASS, no H100 needed
 ```
 
 ### Viewers

@@ -3,11 +3,11 @@
 # at an interactive SSH prompt.
 #
 #   ./local/session.sh              # sync, run everything, pull results
-#   ./local/session.sh 01_vecadd    # one kernel
+#   ./local/session.sh 01_vecadd_ai    # one kernel
 #   ./local/session.sh --boot       # include first-time bootstrap
 #   ./local/session.sh --stop       # ...and stop the pod when done
-#   PROFILE=1 ./local/session.sh 01_vecadd   # also try an ncu report (nsys runs either way)
-#   NSYS_TRACE=0 ./local/session.sh 01_vecadd # skip the default nsys timeline for a tighter loop
+#   PROFILE=1 ./local/session.sh 01_vecadd_ai   # also try an ncu report (nsys runs either way)
+#   NSYS_TRACE=0 ./local/session.sh 01_vecadd_ai # skip the default nsys timeline for a tighter loop
 #   FULL_SANITIZE=1 ./local/session.sh       # add synccheck + racecheck
 #
 # Requires local/pod.env with the connection details RunPod gave you:

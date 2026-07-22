@@ -3,7 +3,7 @@
 # you should never be sitting at an SSH prompt thinking while this runs.
 #
 #   ./scripts/run.sh              # build, correctness, sanitize, bench + nsys timeline
-#   ./scripts/run.sh 01_vecadd    # just one kernel
+#   ./scripts/run.sh 01_vecadd_ai    # just one kernel
 #   PROFILE=1 ./scripts/run.sh    # ALSO try an ncu report (blocked on RunPod: ERR_NVGPUCTRPERM)
 #   NSYS_TRACE=0 ./scripts/run.sh # skip the default nsys timeline
 #   FULL_SANITIZE=1 ./scripts/run.sh   # add synccheck + racecheck (shared-mem kernels)

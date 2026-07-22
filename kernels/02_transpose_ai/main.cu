@@ -1,4 +1,4 @@
-// 02_transpose -- coalescing. Same 8-bytes-per-element roofline as a plain copy;
+// 02_transpose_ai -- coalescing. Same 8-bytes-per-element roofline as a plain copy;
 // the entire story is whether a warp's writes land in one cache line or 32.
 // Modes: test | bench | profile  (see common/runner.cuh).
 #include "runner.cuh"
@@ -86,7 +86,7 @@ int main(int argc, char** argv) {
   lab::Spec spec("transpose", /*inputs=*/1, /*bytes/elem=*/2 * sizeof(float));
   spec.reference = transpose_cpu;
   spec.test_shapes = lab::awkward_2d();
-  // Element counts match 01_vecadd's sweep (2^20..2^26), so both kernels'
+  // Element counts match 01_vecadd_ai's sweep (2^20..2^26), so both kernels'
   // %-of-peak are read on the same axis.
   spec.bench_shapes = {{1024, 1024}, {4096, 4096}, {8192, 8192}};
 

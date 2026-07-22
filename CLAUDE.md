@@ -25,11 +25,11 @@ around spending as few as possible.
 ```bash
 # offline toolchain (Docker, arm64 CUDA 12.6 — no GPU needed)
 ./local/cudash make ARCH=86              # type-check the whole tree
-./local/cudash make regs K=01_vecadd     # registers/thread + smem/block
-./local/cudash make sass K=01_vecadd ARCH=90a
+./local/cudash make regs K=01_vecadd_ai     # registers/thread + smem/block
+./local/cudash make sass K=01_vecadd_ai ARCH=90a
 # ...cudash uses `docker run -it`; from a non-TTY agent shell use:
 docker run --rm --platform=linux/arm64 -v "$PWD:/work" -w /work cudalab-offline \
-  make regs K=01_vecadd ARCH=86
+  make regs K=01_vecadd_ai ARCH=86
 
 # paid pod session (from the Mac; needs local/pod.env)
 ./local/session.sh --boot                # first run on a fresh pod
@@ -45,6 +45,7 @@ those from Claude Code. `ncu`/`PROFILE=1` is blocked on RunPod
 
 ```
 kernels/NN_name/main.cu   ONE kernel family: CPU reference + __global__ variants + Spec
+                          (suffix is authorship: _ai = Claude, _mine = the user)
 common/check.cuh          CUDA_CHECK / KERNEL_CHECK / ceil_div
 common/harness.cuh        instruments: event timing, compare, peak-BW probe,
                           CSV record (with provenance), occupancy report
@@ -118,6 +119,16 @@ int main(int argc, char** argv) {
   for grid dims so an empty shape still yields a legal (≥1 block) launch.
 - Variants are a *ladder*: each one fixes exactly one thing the previous one got
   wrong, and all of them stay in the file so the benchmark shows the delta.
+- **Authorship lives in the directory name, always suffixed.** `_ai` = written
+  by Claude, `_mine` = written by the user. Never create an unsuffixed kernel
+  directory: anything you author is `kernels/NN_name_ai/`, and the user's own is
+  `kernels/NN_name_mine/`. Nothing in the build keys off the suffix — the
+  Makefile and `run.sh` just see another directory — so the pair sits side by
+  side and benchmarks head-to-head.
+- The `Spec` name is the *lesson*, not the author: `01_vecadd_mine` keeps
+  `Spec("vecadd")` so it lands in the same `kernel` column as `01_vecadd_ai` and
+  shares a roofline. Give its variants names that don't collide with the `_ai`
+  file's (`mine_naive`, not a second `naive`).
 - `bench.csv` is append-only across sessions and carries GPU / sm / git SHA /
   date per row. Don't rewrite it; don't rename kernels or variants casually.
 - `results/peak_bw.txt` is keyed by GPU name and re-measured automatically when

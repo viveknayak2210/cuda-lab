@@ -9,9 +9,7 @@
 
 // The driver behind every kernels/NN_*/main.cu. A kernel file supplies only the
 // lesson -- a CPU reference, the __global__ variants, and a Spec wiring them up.
-// Buffers, the awkward-size sweep, timing, the CSV row and the run modes live
-// here, once.
-//
+
 // Buffer model: `inputs` device inputs + one output, each Shape::numel() floats
 // (set Spec::out_numel when the output is a different size, e.g. a reduction).
 // Kernels whose inputs differ in size (sgemm) need this widened.
@@ -66,7 +64,7 @@ inline const std::vector<Shape>& awkward_1d() {
 }
 
 // The 2-D analog: straddles tile and warp boundaries, goes thin/degenerate, and
-// ends on non-square, non-power-of-two dims (257 prime) a naive index fumbles.
+// ends on non-square, non-power-of-two dims (257 prime).
 inline const std::vector<Shape>& awkward_2d() {
   static const std::vector<Shape> v = {
       {0, 0},   {1, 1},    {1, 32},   {32, 1},   {3, 5},
@@ -215,8 +213,7 @@ inline int run_tests(const Spec& spec) {
 
 inline void run_bench(const Spec& spec) {
   print_device_banner();
-  // ptxas -v gave you regs/thread and smem/block at build time; this is what
-  // they buy you on this card.
+  // ptxas -v gives regs/thread and smem/block at build time
   for (const Variant& v : spec.variants) v.occupancy();
   for (Shape s : spec.bench_shapes) {
     Buffers buf(spec, s);
@@ -229,7 +226,7 @@ inline void run_bench(const Spec& spec) {
   }
 }
 
-// One launch, largest bench shape -- the single clean target for nsys/ncu.
+// One launch, largest bench shape
 inline int run_profile(const Spec& spec, const char* want) {
   const Variant* v = &spec.variants.front();
   if (want) {

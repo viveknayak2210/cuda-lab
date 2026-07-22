@@ -1,12 +1,9 @@
-// 01_vecadd -- elementwise add. 12 bytes moved per element and one flop to show
-// for it: pure bandwidth, the baseline every other kernel's roofline is read
-// against.  Modes: test | bench | profile  (see common/runner.cuh).
+// Add two float vectors
 #include "runner.cuh"
 
 static constexpr int BLOCK = 256;
 
-// One element per thread. The guard is what the awkward-size battery exists to
-// catch.
+// One element per thread.
 __global__ void vecadd_naive(const float* __restrict__ a,
                              const float* __restrict__ b, float* __restrict__ c,
                              int n) {
@@ -46,3 +43,4 @@ int main(int argc, char** argv) {
 
   return lab::run(argc, argv, spec);
 }
+  

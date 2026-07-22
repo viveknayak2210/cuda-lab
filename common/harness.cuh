@@ -9,21 +9,14 @@
 #include <string>
 #include <vector>
 
-// Injected by the Makefile (-DLAB_GIT_SHA=...) so every CSV row records which
-// source version produced it. "unknown" when built outside the repo.
+// Injected by Makefile (-DLAB_GIT_SHA=...) so every CSV row records which source version produced it.
 #ifndef LAB_GIT_SHA
 #define LAB_GIT_SHA "unknown"
 #endif
 
-// The instruments: timing, comparison, the achievable-bandwidth probe, the CSV
-// row and the occupancy report. The driver that calls them is runner.cuh.
-
 namespace lab {
 
-// ---------------------------------------------------------------------------
-// Timing: warmup, then N repeats, report the median (not the mean -- one
-// scheduling hiccup should not move your number).
-// ---------------------------------------------------------------------------
+// Timing: warmup, then N repeats, report the median.
 inline float time_kernel_ms(const std::function<void()>& launch, int warmup = 5,
                             int repeats = 50) {
   cudaEvent_t start, stop;
@@ -51,10 +44,7 @@ inline float time_kernel_ms(const std::function<void()>& launch, int warmup = 5,
   return samples[samples.size() / 2];
 }
 
-// ---------------------------------------------------------------------------
-// Correctness. Relative error, never exact equality -- these are floats and
-// the GPU will legitimately reassociate.
-// ---------------------------------------------------------------------------
+// Correctness check
 inline bool compare(const float* got, const float* want, long long n,
                     float rtol = 1e-5f, float atol = 1e-6f,
                     int max_report = 5) {
@@ -62,8 +52,6 @@ inline bool compare(const float* got, const float* want, long long n,
   for (long long i = 0; i < n; ++i) {
     float diff = std::fabs(got[i] - want[i]);
     float tol = atol + rtol * std::fabs(want[i]);
-    // A NaN in `got` fails !(diff <= tol) on its own (NaN compares false), so
-    // no separate isnan test; a NaN that MATCHES a reference NaN is correct.
     if (!(diff <= tol) && !(std::isnan(got[i]) && std::isnan(want[i]))) {
       if (bad < max_report) {
         std::fprintf(stderr, "  mismatch @%lld: got %.9g want %.9g (|d|=%.3g)\n",
@@ -76,20 +64,8 @@ inline bool compare(const float* got, const float* want, long long n,
   return bad == 0;
 }
 
-// ---------------------------------------------------------------------------
-// Achievable bandwidth probe. Compare against THIS, not the spec-sheet number:
-// the spec number is unreachable and makes every kernel look worse than it is.
-//
-// A baseline must be >= anything measured against it, so probe BOTH common
-// stream mixes (1R+1W scale, 2R+1W triad -- read/write ratio shifts what the
-// memory system sustains) across several grid sizes, and keep the best.
-// Cached to results/peak_bw.txt keyed by GPU name, so a different card on the
-// next pod re-measures automatically instead of poisoning every %-of-peak.
-// ---------------------------------------------------------------------------
-// The probe buffers must hold incompressible data: Ampere+ can compress
-// uniform traffic (e.g. all-zeros) in L2/DRAM, which inflates the measured
-// "peak" and makes every real kernel's %-of-peak read low. Cheap integer hash
-// per element, done on-device so no 256 MB host allocations.
+// Ampere+ can compress uniform traffic (e.g. all-zeros) in L2/DRAM, which inflates the measured
+// "peak" and makes every real kernel's %-of-peak read low.
 __global__ void _bw_fill(float* __restrict__ dst, size_t n) {
   size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x;
   size_t stride = (size_t)gridDim.x * blockDim.x;
@@ -119,8 +95,7 @@ inline float measure_peak_bw_gbs() {
   CUDA_CHECK(cudaGetDevice(&dev));
   CUDA_CHECK(cudaGetDeviceProperties(&p, dev));
 
-  // Cache format: "<gbs>\n<gpu name>\n". A bare number (the old format) or a
-  // name mismatch both fall through to a fresh measurement.
+  // Cache format: "<gbs>\n<gpu name>\n".
   if (FILE* f = std::fopen("results/peak_bw.txt", "r")) {
     float cached = 0.f;
     char name[256] = {0};
@@ -167,9 +142,6 @@ inline float measure_peak_bw_gbs() {
 
 // ---------------------------------------------------------------------------
 // One row of the results CSV. Append-only so runs accumulate across sessions.
-// The trailing provenance columns (gpu, sm, sha, date) are what let you trust
-// a row three pods and six weeks later. They come last so old 7-column rows
-// still line up.
 // ---------------------------------------------------------------------------
 inline void record(const std::string& kernel, const std::string& variant,
                    long long n, float ms, double bytes_moved,
@@ -215,11 +187,10 @@ inline void print_device_banner() {
 }
 
 // ---------------------------------------------------------------------------
-// Occupancy: closes the loop from `ptxas -v`. Registers/thread and smem/block
-// are the INPUTS; this prints the OUTPUT that matters -- how many blocks each
+// Occupancy: closes the loop from `ptxas -v`. How many blocks each
 // SM can actually hold at this block size, and what fraction of the SM's
 // thread capacity that is. Pass dyn_smem if the kernel launches with dynamic
-// shared memory. Costs nothing: pure driver arithmetic, no kernel launch.
+// shared memory.
 // ---------------------------------------------------------------------------
 template <typename Kernel>
 inline void report_occupancy(const char* name, Kernel kernel, int block,

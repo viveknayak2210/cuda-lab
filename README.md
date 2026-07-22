@@ -46,7 +46,7 @@ Phases 1–2 are `scripts/bootstrap.sh` (`--boot` only, ~10s); the rest are `scr
 | 7 | **nsys timeline** | *Default.* CUDA-activity trace (kernel + memcpy, transfers vs compute). `NSYS_TRACE=0` skips. |
 | 8 | **ncu profile** | *Opt-in* (`PROFILE=1`). Usually blocked on RunPod |
 
-**Roofline-first:** every `%-of-peak` compares against `results/peak_bw.txt` — a bandwidth the pod *measures*, not the spec sheet. ~100% of peak ⇒ memory-bound, stop tuning. Well under peak ⇒ suspect coalescing/occupancy, and only then is a profiler worth it. Each `bench.csv` row is stamped with GPU, `sm`, git SHA, and date, so a number is still trustworthy three pods and six weeks later.
+Each `bench.csv` row is stamped with GPU, `sm`, git SHA, and date.
 
 ---
 
@@ -85,4 +85,4 @@ GUIDE.md                  the full workflow: why the pod is a batch job
 ## Requirements
 
 - **Mac** with Docker Desktop (offline `nvcc`), plus **Nsight Systems.app**.
-- A **RunPod** account with your SSH pubkey registered, and a GPU pod (using RTX A4000 here).
+- A **RunPod** account with SSH pubkey registered, and a GPU pod (using RTX A4000 here).

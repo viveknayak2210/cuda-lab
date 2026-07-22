@@ -99,7 +99,8 @@ static int run_tests() {
   }
   if (failures) std::printf("TESTS FAILED (%d)\n", failures);
   else std::printf("all sizes passed\n");
-  return failures;
+  // Exit codes are mod 256 -- a raw count of exactly 256 would read as success.
+  return failures ? 1 : 0;
 }
 
 static void run_bench() {

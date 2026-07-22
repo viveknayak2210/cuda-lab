@@ -58,7 +58,11 @@ SANITIZERS="memcheck initcheck"
 [ "${FULL_SANITIZE:-0}" = "1" ] && SANITIZERS="memcheck initcheck synccheck racecheck"
 
 phase "BUILD"
-make -j"$(nproc)" 2>&1 | grep -Ev '^\s*$' || { echo "BUILD FAILED"; exit 1; }
+# Gate on make's own status, not the pipeline's: with pipefail, grep selecting
+# zero lines (a silent up-to-date build) would otherwise read as BUILD FAILED.
+make -j"$(nproc)" 2>&1 | grep -Ev '^\s*$'
+MAKE_STATUS=${PIPESTATUS[0]}
+[ "$MAKE_STATUS" = "0" ] || { echo "BUILD FAILED"; exit 1; }
 # ptxas info lines above are your register/smem budget -- read them.
 
 KERNELS=$(ls kernels)
@@ -128,8 +132,11 @@ for K in $KERNELS; do
 done
 
 phase "PACKAGE"
+# Exclude prior sessions' tarballs AND logs -- each archive should hold this
+# session's artifacts, not grow monotonically. This session's log is re-added.
 tar czf "results/session-$TS.tar.gz" \
-    -C results $(cd results && ls | grep -v '\.tar\.gz$') 2>/dev/null
+    -C results $(cd results && ls | grep -vE '\.tar\.gz$|^session-.+\.log$') \
+    "session-$TS.log" 2>/dev/null
 echo "  results/session-$TS.tar.gz  ($(du -h results/session-$TS.tar.gz | cut -f1))"
 
 echo

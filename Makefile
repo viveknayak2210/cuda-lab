@@ -5,10 +5,11 @@
 #   make ptx K=01_vecadd    dump PTX
 #   make sass K=01_vecadd   dump SASS
 
-# Detect compute capability from the live GPU; fall back to 86 (A4000/A5000/3090)
-# so the tree still compiles on a machine with no GPU attached.
+# Detect compute capability from the live GPU. No GPU -> the pipeline yields an
+# empty string and the ifeq below falls back to 86 (A4000/A5000/3090) so the
+# tree still compiles on a machine with no GPU attached.
 ARCH ?= $(shell nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null \
-          | head -1 | tr -d '.' || echo 86)
+          | head -1 | tr -d '.')
 ifeq ($(strip $(ARCH)),)
   ARCH := 86
 endif

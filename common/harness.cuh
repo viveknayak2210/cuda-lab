@@ -66,22 +66,24 @@ inline float time_kernel_ms(const std::function<void()>& launch, int warmup = 5,
 // Correctness. Relative error, never exact equality -- these are floats and
 // the GPU will legitimately reassociate.
 // ---------------------------------------------------------------------------
-inline bool compare(const float* got, const float* want, int n,
+inline bool compare(const float* got, const float* want, long long n,
                     float rtol = 1e-5f, float atol = 1e-6f,
                     int max_report = 5) {
-  int bad = 0;
-  for (int i = 0; i < n; ++i) {
+  long long bad = 0;
+  for (long long i = 0; i < n; ++i) {
     float diff = std::fabs(got[i] - want[i]);
     float tol = atol + rtol * std::fabs(want[i]);
-    if (!(diff <= tol) || std::isnan(got[i])) {
+    // A NaN in `got` fails !(diff <= tol) on its own (NaN compares false), so
+    // no separate isnan test; a NaN that MATCHES a reference NaN is correct.
+    if (!(diff <= tol) && !(std::isnan(got[i]) && std::isnan(want[i]))) {
       if (bad < max_report) {
-        std::fprintf(stderr, "  mismatch @%d: got %.9g want %.9g (|d|=%.3g)\n",
+        std::fprintf(stderr, "  mismatch @%lld: got %.9g want %.9g (|d|=%.3g)\n",
                      i, got[i], want[i], diff);
       }
       ++bad;
     }
   }
-  if (bad) std::fprintf(stderr, "  %d/%d elements wrong\n", bad, n);
+  if (bad) std::fprintf(stderr, "  %lld/%lld elements wrong\n", bad, n);
   return bad == 0;
 }
 
@@ -95,6 +97,19 @@ inline bool compare(const float* got, const float* want, int n,
 // Cached to results/peak_bw.txt keyed by GPU name, so a different card on the
 // next pod re-measures automatically instead of poisoning every %-of-peak.
 // ---------------------------------------------------------------------------
+// The probe buffers must hold incompressible data: Ampere+ can compress
+// uniform traffic (e.g. all-zeros) in L2/DRAM, which inflates the measured
+// "peak" and makes every real kernel's %-of-peak read low. Cheap integer hash
+// per element, done on-device so no 256 MB host allocations.
+__global__ void _bw_fill(float* __restrict__ dst, size_t n) {
+  size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x;
+  size_t stride = (size_t)gridDim.x * blockDim.x;
+  for (; i < n; i += stride) {
+    unsigned h = (unsigned)i * 2654435761u;  // Knuth multiplicative hash
+    dst[i] = (float)(h & 0xFFFF) * (1.f / 65536.f) - 0.5f;
+  }
+}
+
 __global__ void _bw_scale(float* __restrict__ dst, const float* __restrict__ src,
                           size_t n) {
   size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x;
@@ -134,10 +149,14 @@ inline float measure_peak_bw_gbs() {
   CUDA_CHECK(cudaMalloc(&a, n * sizeof(float)));
   CUDA_CHECK(cudaMalloc(&b, n * sizeof(float)));
   CUDA_CHECK(cudaMalloc(&c, n * sizeof(float)));
-  CUDA_CHECK(cudaMemset(a, 0, n * sizeof(float)));
-  CUDA_CHECK(cudaMemset(b, 0, n * sizeof(float)));
 
   const int block = 256;
+  const int fill_grid = p.multiProcessorCount * 32;
+  _bw_fill<<<fill_grid, block>>>(a, n);
+  _bw_fill<<<fill_grid, block>>>(b, n);
+  CUDA_CHECK(cudaGetLastError());
+  CUDA_CHECK(cudaDeviceSynchronize());
+
   float best = 0.f;
   for (int mult : {16, 32, 64}) {
     const int grid = p.multiProcessorCount * mult;
@@ -163,8 +182,9 @@ inline float measure_peak_bw_gbs() {
 // a row three pods and six weeks later. They come last so old 7-column rows
 // still line up.
 // ---------------------------------------------------------------------------
-inline void record(const std::string& kernel, const std::string& variant, int n,
-                   float ms, double bytes_moved, double flops = 0.0) {
+inline void record(const std::string& kernel, const std::string& variant,
+                   long long n, float ms, double bytes_moved,
+                   double flops = 0.0) {
   FILE* f = std::fopen("results/bench.csv", "a");
   if (!f) return;
   std::fseek(f, 0, SEEK_END);
@@ -185,13 +205,13 @@ inline void record(const std::string& kernel, const std::string& variant, int n,
 
   double gbs = bytes_moved / (ms * 1e6);
   double gflops = flops / (ms * 1e6);
-  std::fprintf(f, "%s,%s,%d,%.6f,%.2f,%.2f,%.1f,%s,%d%d,%s,%s\n",
+  std::fprintf(f, "%s,%s,%lld,%.6f,%.2f,%.2f,%.1f,%s,%d%d,%s,%s\n",
                kernel.c_str(), variant.c_str(), n, ms, gbs, gflops,
                100.0 * gbs / peak, prop.name, prop.major, prop.minor,
                LAB_GIT_SHA, date);
   std::fclose(f);
 
-  std::printf("  %-14s n=%-9d %8.4f ms  %7.1f GB/s  %5.1f%% of peak\n",
+  std::printf("  %-14s n=%-9lld %8.4f ms  %7.1f GB/s  %5.1f%% of peak\n",
               variant.c_str(), n, ms, gbs, 100.0 * gbs / peak);
 }
 

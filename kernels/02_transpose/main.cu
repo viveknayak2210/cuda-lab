@@ -168,7 +168,7 @@ static int run_tests() {
       if (n > 0)
         CUDA_CHECK(cudaMemcpy(buf.hout.data(), buf.dout, n * sizeof(float),
                               cudaMemcpyDeviceToHost));
-      if (!lab::compare(buf.hout.data(), buf.href.data(), (int)n)) {
+      if (!lab::compare(buf.hout.data(), buf.href.data(), (long long)n)) {
         std::fprintf(stderr, "FAIL %s %dx%d\n", name, w, h);
         ++failures;
       }
@@ -193,7 +193,8 @@ static int run_tests() {
   }
   if (failures) std::printf("TESTS FAILED (%d)\n", failures);
   else std::printf("all sizes passed\n");
-  return failures;
+  // Exit codes are mod 256 -- a raw count of exactly 256 would read as success.
+  return failures ? 1 : 0;
 }
 
 static void run_bench() {
@@ -210,7 +211,7 @@ static void run_bench() {
     const int w = side, h = side;
     Buffers buf;
     buf.alloc(w, h);
-    const int n = w * h;
+    const long long n = (long long)w * h;
     const double bytes = 2.0 * n * sizeof(float);  // 1 read + 1 write
     const dim3 block(TILE_DIM, BLOCK_ROWS);
     const dim3 grid = grid_for(w, h);

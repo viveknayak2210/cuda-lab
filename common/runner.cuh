@@ -1,6 +1,8 @@
 #pragma once
 #include "harness.cuh"
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <random>
@@ -36,11 +38,53 @@ inline int blocks(int items, int per_block) {
   return std::max(1, ceil_div(items, per_block));
 }
 
+// Output element type for `simple` mode. test/bench always compare against a
+// float CPU reference, so they stay F32; a non-float dtype only widens the
+// output buffer (a double/int64 is 8 bytes) and tells `simple` how to read the
+// bytes back. Inputs are always float-filled -- see the kernel-file contract.
+enum class Dtype { F32, I32, U32, I64, U64, F64 };
+inline int dtype_size(Dtype d) {
+  switch (d) {
+    case Dtype::I64:
+    case Dtype::U64:
+    case Dtype::F64: return 8;
+    default: return 4;  // F32, I32, U32
+  }
+}
+// Maps a launcher's element type back to the enum so out_as<T>() can prove the
+// pointer it hands the kernel matches what the buffer was sized for. A type with
+// no specialization here simply won't compile as an out_as<T> -- which is the
+// point: unknown output types are rejected, not silently misread.
+template <typename T> constexpr Dtype dtype_of();
+template <> constexpr Dtype dtype_of<float>() { return Dtype::F32; }
+template <> constexpr Dtype dtype_of<int>() { return Dtype::I32; }
+template <> constexpr Dtype dtype_of<unsigned>() { return Dtype::U32; }
+template <> constexpr Dtype dtype_of<long long>() { return Dtype::I64; }
+template <> constexpr Dtype dtype_of<unsigned long long>() { return Dtype::U64; }
+template <> constexpr Dtype dtype_of<double>() { return Dtype::F64; }
+
 // What a variant's launcher gets handed: device pointers + the shape under test.
 struct Args {
   float* out = nullptr;
   const float* in[kMaxInputs] = {};
   Shape shape;
+  Dtype out_dtype = Dtype::F32;  // what `out` was sized for; enforced by out_as<T>
+
+  // A typed view of the output for a non-float kernel. Aborts if T disagrees
+  // with the declared out_dtype -- that mismatch is exactly the bug where the
+  // buffer is sized for one type and the kernel writes another (e.g. out_dtype
+  // left at F32 while the kernel writes doubles -> a half-size buffer -> an
+  // out-of-bounds device write). Use this instead of a raw reinterpret_cast.
+  template <typename T>
+  T* out_as() const {
+    if (dtype_of<T>() != out_dtype) {
+      std::fprintf(stderr,
+                   "out_as<T>: output type does not match spec.out_dtype -- the "
+                   "buffer is sized for the wrong type (did you set out_dtype?)\n");
+      std::abort();
+    }
+    return reinterpret_cast<T*>(out);
+  }
 };
 
 struct Variant {
@@ -81,6 +125,7 @@ struct Spec {
   double bytes_per_elem;    // DRAM traffic per element -- the roofline divisor
   std::function<void(const float* const* in, float* out, Shape)> reference;
   std::function<long long(Shape)> out_numel;  // default: Shape::numel()
+  Dtype out_dtype = Dtype::F32;  // simple-mode output type (see Dtype above)
   int out_row = 0;  // >0: simple mode also dumps the first/last rows of this width
   std::vector<Shape> test_shapes, bench_shapes;
   std::vector<Shape> simple_shapes;  // `simple` mode; empty -> sampled from test_shapes
@@ -121,7 +166,9 @@ struct Spec {
 class Buffers {
  public:
   Buffers(const Spec& spec, Shape shape)
-      : shape_(shape), n_(shape.numel()), out_n_(spec.out_elems(shape)) {
+      : shape_(shape), n_(shape.numel()), out_n_(spec.out_elems(shape)),
+        out_bytes_(out_n_ * dtype_size(spec.out_dtype)),
+        out_dtype_(spec.out_dtype) {
     std::mt19937 rng(1234);
     std::uniform_real_distribution<float> dist(-1.f, 1.f);
     h_in_.resize(spec.inputs);
@@ -130,7 +177,11 @@ class Buffers {
       for (long long i = 0; i < n_; ++i) host[i] = dist(rng);
     }
     for (const auto& host : h_in_) h_in_ptr_.push_back(host.data());
-    h_out_.resize(out_n_);
+    // Staged as float but sized in raw bytes; simple mode reinterprets it per
+    // out_dtype. std::vector over-aligns (>=16 B in practice), so reading it
+    // back as int/double is safe. Ceil-divide so a dtype whose size isn't a
+    // multiple of 4 can't under-allocate. h_ref_ is float -- test mode only.
+    h_out_.resize((out_bytes_ + sizeof(float) - 1) / sizeof(float));
     h_ref_.resize(out_n_);
 
     // cudaMalloc(0) is legal and hands back nullptr; keep the empty case explicit.
@@ -142,7 +193,7 @@ class Buffers {
                               cudaMemcpyHostToDevice));
       }
     }
-    if (out_n_ > 0) CUDA_CHECK(cudaMalloc(&d_out_, out_n_ * sizeof(float)));
+    if (out_bytes_ > 0) CUDA_CHECK(cudaMalloc(&d_out_, out_bytes_));
   }
 
   ~Buffers() {
@@ -158,15 +209,16 @@ class Buffers {
     a.out = d_out_;
     for (size_t k = 0; k < d_in_.size(); ++k) a.in[k] = d_in_[k];
     a.shape = shape_;
+    a.out_dtype = out_dtype_;
     return a;
   }
 
   void clear_out() {
-    if (out_n_ > 0) CUDA_CHECK(cudaMemset(d_out_, 0, out_n_ * sizeof(float)));
+    if (out_bytes_ > 0) CUDA_CHECK(cudaMemset(d_out_, 0, out_bytes_));
   }
   void fetch() {
-    if (out_n_ > 0)
-      CUDA_CHECK(cudaMemcpy(h_out_.data(), d_out_, out_n_ * sizeof(float),
+    if (out_bytes_ > 0)
+      CUDA_CHECK(cudaMemcpy(h_out_.data(), d_out_, out_bytes_,
                             cudaMemcpyDeviceToHost));
   }
 
@@ -177,7 +229,8 @@ class Buffers {
 
  private:
   Shape shape_;
-  long long n_, out_n_;
+  long long n_, out_n_, out_bytes_;
+  Dtype out_dtype_;
   std::vector<std::vector<float>> h_in_;
   std::vector<const float*> h_in_ptr_;
   std::vector<float> h_out_, h_ref_;
@@ -247,10 +300,94 @@ inline std::vector<Shape> simple_ramp(const std::vector<Shape>& from, int k = 5)
   return out;
 }
 
+// One element, formatted per type.
+inline void print_elem(int v) { std::printf("%d", v); }
+inline void print_elem(unsigned v) { std::printf("%u", v); }
+inline void print_elem(long long v) { std::printf("%lld", v); }
+inline void print_elem(unsigned long long v) { std::printf("%llu", v); }
+inline void print_elem(float v) { std::printf("%.6g", v); }
+inline void print_elem(double v) { std::printf("%.6g", v); }
+
+// A one-line signature of an output block, typed on the element. A bare mean is
+// a weak signature -- it can't tell an all-zeros buffer (a kernel that skipped
+// every element) or a sign-cancelling one from a correct result. So a tensor
+// reports min / max / mean, a count of any non-finite values, and a short head
+// preview of the actual content; a small output just prints its values. `o`
+// points at n elements of T (the fetched output, reinterpreted per out_dtype).
+template <typename T>
+inline void simple_signature(const T* o, long long n, const Shape& s,
+                             int out_row) {
+  constexpr long long kInlineMax = 8;  // <= this many elements -> print them all
+  if (n <= kInlineMax) {  // scalar / tiny output -> the values themselves
+    std::printf("  in=%-10s out numel=%lld  vals=[", s.label().c_str(), n);
+    for (long long i = 0; i < n; ++i) {
+      if (i) std::printf(", ");
+      print_elem(o[i]);
+    }
+    std::printf("]\n");
+    return;
+  }
+  // Aggregate over the finite values only, so a stray NaN/Inf doesn't blank out
+  // min/max/mean -- it is reported separately as a count. (isfinite() is true for
+  // every integer, so integer outputs simply never trip the nonfinite branch.)
+  double sum = 0.0;
+  long long finite = 0, nonfinite = 0;
+  T lo{}, hi{};
+  for (long long i = 0; i < n; ++i) {
+    const T v = o[i];
+    if (!std::isfinite((double)v)) { ++nonfinite; continue; }
+    if (finite == 0) { lo = hi = v; }
+    else { if (v < lo) lo = v; if (v > hi) hi = v; }
+    sum += (double)v;
+    ++finite;
+  }
+  std::printf("  in=%-10s out numel=%lld  ", s.label().c_str(), n);
+  if (finite > 0) {
+    std::printf("min=");  print_elem(lo);
+    std::printf(" max="); print_elem(hi);
+    std::printf(" mean=%.6g", sum / (double)finite);
+  } else {
+    std::printf("min=n/a max=n/a mean=n/a");  // every element was non-finite
+  }
+  if (nonfinite) std::printf(" nonfinite=%lld", nonfinite);
+  std::printf("\n");
+
+  if (out_row > 0) {
+    // The flat buffer is [rows][out_row]; show the head and tail rows so a
+    // per-row kernel (e.g. one value per thread) is eyeballable.
+    const int w = out_row;
+    const long long rows = n / w, show = 3;  // `show` rows at each end
+    for (long long r = 0; r < rows; ++r) {
+      if (rows > 2 * show && r == show) {
+        std::printf("      ... (%lld rows elided)\n", rows - 2 * show);
+        r = rows - show - 1;  // jump to the tail
+        continue;
+      }
+      std::printf("      row %-6lld [", r);
+      for (int j = 0; j < w; ++j) {
+        if (j) std::printf(", ");
+        print_elem(o[r * w + j]);
+      }
+      std::printf("]\n");
+    }
+  } else {
+    // No row structure declared -> a flat head preview, so the signature carries
+    // concrete values, not just aggregates.
+    const long long k = std::min<long long>(n, 5);
+    std::printf("      head=[");
+    for (long long i = 0; i < k; ++i) {
+      if (i) std::printf(", ");
+      print_elem(o[i]);
+    }
+    if (k < n) std::printf(", ...");
+    std::printf("]\n");
+  }
+}
+
 // `simple` mode: launch one variant across a handful of sizes and print a quick
-// signature of what came back -- shape + mean for a tensor, the raw values for a
-// scalar/tiny output. No CPU compare, no timing; the fast "did it produce
-// something sane" loop, distinct from the `test` correctness gate.
+// signature of what came back -- min/max/mean + a head preview for a tensor, the
+// raw values for a scalar/tiny output. No CPU compare, no timing; the fast "did
+// it produce something sane" loop, distinct from the `test` correctness gate.
 inline int run_simple(const Spec& spec, const char* want) {
   const Variant* v = &spec.variants.front();
   if (want) {
@@ -274,34 +411,30 @@ inline int run_simple(const Spec& spec, const char* want) {
     KERNEL_CHECK();
     buf.fetch();
     const long long n = buf.out_n();
-    const float* o = buf.host_out();
-    if (n <= 8) {  // scalar / tiny output -> the values themselves
-      std::printf("  in=%-10s out numel=%lld  vals=[", s.label().c_str(), n);
-      for (long long i = 0; i < n; ++i)
-        std::printf("%s%.6g", i ? ", " : "", o[i]);
-      std::printf("]\n");
-    } else {  // tensor -> shape + mean, plus an optional first/last-rows dump
-      double sum = 0.0;
-      for (long long i = 0; i < n; ++i) sum += o[i];
-      std::printf("  in=%-10s out numel=%lld  mean=%.6g\n", s.label().c_str(),
-                  n, sum / (double)n);
-      // out_row>0 means the flat buffer is [rows][out_row]; show the head and
-      // tail so a per-row kernel (e.g. one value per thread) is eyeballable.
-      if (spec.out_row > 0) {
-        const int w = spec.out_row;
-        const long long rows = n / w, show = 3;  // `show` rows at each end
-        for (long long r = 0; r < rows; ++r) {
-          if (rows > 2 * show && r == show) {
-            std::printf("      ... (%lld rows elided)\n", rows - 2 * show);
-            r = rows - show - 1;  // jump to the tail
-            continue;
-          }
-          std::printf("      row %-6lld [", r);
-          for (int j = 0; j < w; ++j)
-            std::printf("%s%g", j ? ", " : "", o[r * w + j]);
-          std::printf("]\n");
-        }
-      }
+    // host_out() is staged as float* but holds raw bytes -- reinterpret per the
+    // declared output type before printing.
+    const void* o = buf.host_out();
+    switch (spec.out_dtype) {
+      case Dtype::I32:
+        simple_signature(static_cast<const int*>(o), n, s, spec.out_row);
+        break;
+      case Dtype::U32:
+        simple_signature(static_cast<const unsigned*>(o), n, s, spec.out_row);
+        break;
+      case Dtype::I64:
+        simple_signature(static_cast<const long long*>(o), n, s, spec.out_row);
+        break;
+      case Dtype::U64:
+        simple_signature(static_cast<const unsigned long long*>(o), n, s,
+                         spec.out_row);
+        break;
+      case Dtype::F64:
+        simple_signature(static_cast<const double*>(o), n, s, spec.out_row);
+        break;
+      case Dtype::F32:
+      default:
+        simple_signature(static_cast<const float*>(o), n, s, spec.out_row);
+        break;
     }
   }
   return 0;

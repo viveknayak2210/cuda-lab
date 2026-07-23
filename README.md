@@ -23,6 +23,7 @@ cp local/pod.env.example local/pod.env      # then edit HOST / PORT
 ./local/session.sh --boot                   # first run on a fresh pod
 ./local/session.sh                           # every run after
 ./local/session.sh 02_transpose_ai              # one kernel while iterating
+./local/session.sh --simple 03_dsum_ai          # quick output check, no battery
 ./local/session.sh --stop                    # end of day
 ```
 
@@ -50,16 +51,32 @@ Each `bench.csv` row is stamped with GPU, `sm`, git SHA, and date.
 
 ---
 
+## Quick check (`--simple`)
+
+Not every edit needs the full meter. `--simple` builds **one** kernel and runs it at ~5 sizes, printing just an *output signature* per size — `min / max / mean` plus a `head=[…]` preview for a tensor, or the raw values for a scalar/tiny output (a `nonfinite=N` count appears if any NaN/Inf slip in). No correctness sweep, no sanitizer, no benchmark, no nsys, and nothing pulled to `./results/` — the printed lines *are* the deliverable.
+
+```bash
+./local/session.sh --simple 03_dsum_ai          # first variant
+./local/session.sh --simple 03_dsum_ai warp     # a named variant
+```
+
+It is a "did it produce something sane" smoke check, **not** a correctness gate — outputs are never compared against the CPU reference (that's the awkward-size sweep in a full run). It also needs neither a reference nor `bench_shapes`, so a kernel can be `simple`-only.
+
+Non-float outputs — an int histogram, an fp64 reduction — declare `spec.out_dtype` (`I32` / `U32` / `I64` / `U64` / `F64`) so the buffer is sized correctly and printed with the right format; the launcher takes its typed pointer from `a.out_as<T>()`, which aborts if the type disagrees with `out_dtype`. Inputs stay float, so this is for float-in → other-type-out kernels. See `03_dsum_ai`. From Claude Code the same flow is `/runpod_simple [kernel]`.
+
+---
+
 ## Kernels
 
 Every kernel directory carries its authorship as a suffix: `_ai` written by Claude, `_mine` written by me. Nothing in the build keys off it — the pair just sits side by side and benchmarks head-to-head.
 
-Each kernel is one `kernels/NN_name/main.cu` holding just the lesson — a CPU reference, the `__global__` variants, and the `Spec` that wires them up. `common/runner.cuh` supplies the rest: buffers, the awkward-size sweep, timing, and three run modes — `test` (correctness), `bench` (roofline), `profile` (single launch for nsys/ncu). Makefile auto-discovers `kernels/*/main.cu`.
+Each kernel is one `kernels/NN_name/main.cu` holding just the lesson — a CPU reference, the `__global__` variants, and the `Spec` that wires them up. `common/runner.cuh` supplies the rest: buffers, the awkward-size sweep, timing, and four run modes — `test` (correctness), `bench` (roofline), `profile` (single launch for nsys/ncu), and `simple` (quick output check, above). Makefile auto-discovers `kernels/*/main.cu`.
 
 | Kernel | Lesson | Variants |
 |---|---|---|
 | **01_vecadd_ai** | Elementwise, memory-bound; the roofline and the awkward-size battery. | `naive`, `gridstride` |
 | **02_transpose_ai** | Coalescing | `naive` (strided write), `tiled` (shared-mem, bank conflict), `tiled_pad` (conflict-free) |
+| **03_dsum_ai** | Reduction with a non-float (`fp64`) output through the `simple` flow. | `shared`, `warp` |
 
 ---
 
@@ -76,6 +93,7 @@ common/runner.cuh         Shape/Args/Spec, buffers, awkward-size batteries,
 Makefile                  arch auto-detect; auto-discovers kernels; ptx/sass/regs
 scripts/bootstrap.sh      one-time pod setup (identify + smoke)
 scripts/run.sh            the battery
+scripts/simple.sh         the lean --simple path: build one kernel, print a signature
 local/session.sh          Mac-side driver: sync → run → pull (→ stop)
 local/cudash              run any toolchain cmd in the offline nvcc container
 local/Dockerfile.offline  ARM64 CUDA toolkit, no GPU/driver needed
@@ -84,6 +102,7 @@ GUIDE.md                  the full workflow: why the pod is a batch job
 CLAUDE.md                 repo contract for agents: rules, layout, conventions
 .claude/commands/runpod_setup.md  Claude Code `/runpod_setup HOST:PORT` — first-time boot + run
 .claude/commands/runpod_run.md    Claude Code `/runpod_run [kernel]` — repeat run, no re-bootstrap
+.claude/commands/runpod_simple.md Claude Code `/runpod_simple [kernel]` — quick output check
 ```
 
 ---

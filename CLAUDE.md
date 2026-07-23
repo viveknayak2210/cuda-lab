@@ -106,6 +106,16 @@ int main(int argc, char** argv) {
   size (a reduction). Kernels whose *inputs* differ in size (sgemm: M×K, K×N,
   M×N) are the first thing that will need `Buffers`/`Spec` widened — do it there
   rather than reintroducing per-kernel boilerplate.
+- **Non-float output:** the output buffer defaults to `float`; a kernel that
+  writes `int`/`unsigned`/`int64`/`double` sets `spec.out_dtype`
+  (`lab::Dtype::{I32,U32,I64,U64,F64}`) so the buffer is sized right and `simple`
+  mode prints it correctly. In the launcher, get the typed pointer from
+  `a.out_as<T>()` (not a raw `reinterpret_cast`) — it aborts if `T` disagrees
+  with `out_dtype`, catching a forgotten `out_dtype` before it becomes an
+  out-of-bounds write. **Inputs stay float**, so this is for float-in →
+  other-type-out kernels (reductions, argmax, histograms); genuine int/double
+  *inputs* would need `Buffers` widened. `test`/`bench` still compare against a
+  float reference, so a non-float kernel is `simple`-only. See `03_dsum_ai`.
 
 ## Conventions
 

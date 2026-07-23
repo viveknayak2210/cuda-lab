@@ -2,6 +2,7 @@
 #include "harness.cuh"
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
@@ -159,20 +160,30 @@ struct Spec {
 };
 
 // ---------------------------------------------------------------------------
-// Host + device buffers for one shape. Inputs are filled from a fixed seed, so
-// a failure is reproducible; the output is zeroed before every launch, so a
-// kernel that skips elements fails the compare instead of reading stale data.
+// Host + device buffers for one shape. Each input gets its own decorrelated
+// stream keyed by (seed, input index), so input k's element i depends only on
+// (k, i) -- the same for every shape and independent of the other inputs. That
+// keeps a failure reproducible, keeps a `simple` head preview stable across
+// sizes, and stops correlated inputs from masking a bug (e.g. a kernel that
+// swaps its two inputs). The output is zeroed before every launch, so a kernel
+// that skips elements fails the compare instead of reading stale data.
 // ---------------------------------------------------------------------------
 class Buffers {
  public:
+  static constexpr unsigned kSeed = 1234;
+
   Buffers(const Spec& spec, Shape shape)
       : shape_(shape), n_(shape.numel()), out_n_(spec.out_elems(shape)),
         out_bytes_(out_n_ * dtype_size(spec.out_dtype)),
         out_dtype_(spec.out_dtype) {
-    std::mt19937 rng(1234);
     std::uniform_real_distribution<float> dist(-1.f, 1.f);
     h_in_.resize(spec.inputs);
-    for (auto& host : h_in_) {
+    for (int k = 0; k < spec.inputs; ++k) {
+      // seed_seq (not kSeed + k): mt19937 seeded with adjacent integers yields
+      // correlated streams, which is exactly what we're avoiding.
+      std::seed_seq seq{kSeed, (unsigned)k};
+      std::mt19937 rng(seq);
+      auto& host = h_in_[k];
       host.resize(n_);
       for (long long i = 0; i < n_; ++i) host[i] = dist(rng);
     }
@@ -308,18 +319,21 @@ inline void print_elem(unsigned long long v) { std::printf("%llu", v); }
 inline void print_elem(float v) { std::printf("%.6g", v); }
 inline void print_elem(double v) { std::printf("%.6g", v); }
 
-// A one-line signature of an output block, typed on the element. A bare mean is
-// a weak signature -- it can't tell an all-zeros buffer (a kernel that skipped
-// every element) or a sign-cancelling one from a correct result. So a tensor
-// reports min / max / mean, a count of any non-finite values, and a short head
-// preview of the actual content; a small output just prints its values. `o`
-// points at n elements of T (the fetched output, reinterpreted per out_dtype).
+// A one-line signature of a labeled block (an input, or the output), typed on
+// the element. A bare mean is a weak signature -- it can't tell an all-zeros
+// buffer (a kernel that skipped every element) or a sign-cancelling one from a
+// real result. So a block reports min / max / mean, a count of any non-finite
+// values, and a short head preview of the actual content; a tiny block just
+// prints its values. `o` points at n elements of T. `out_row > 0` (output only)
+// swaps the flat head for a first/last-rows dump. Printing each input beside the
+// output makes a transform (e.g. c = a + b) eyeballable term by term.
 template <typename T>
-inline void simple_signature(const T* o, long long n, const Shape& s,
-                             int out_row) {
+inline void simple_block(const char* label, const T* o, long long n,
+                         int out_row = 0) {
   constexpr long long kInlineMax = 8;  // <= this many elements -> print them all
-  if (n <= kInlineMax) {  // scalar / tiny output -> the values themselves
-    std::printf("  in=%-10s out numel=%lld  vals=[", s.label().c_str(), n);
+  std::printf("      %-6s ", label);
+  if (n <= kInlineMax) {  // scalar / tiny -> the values themselves
+    std::printf("vals=[");
     for (long long i = 0; i < n; ++i) {
       if (i) std::printf(", ");
       print_elem(o[i]);
@@ -329,19 +343,18 @@ inline void simple_signature(const T* o, long long n, const Shape& s,
   }
   // Aggregate over the finite values only, so a stray NaN/Inf doesn't blank out
   // min/max/mean -- it is reported separately as a count. (isfinite() is true for
-  // every integer, so integer outputs simply never trip the nonfinite branch.)
+  // every integer, so integer blocks simply never trip the nonfinite branch.)
   double sum = 0.0;
   long long finite = 0, nonfinite = 0;
   T lo{}, hi{};
   for (long long i = 0; i < n; ++i) {
-    const T v = o[i];
-    if (!std::isfinite((double)v)) { ++nonfinite; continue; }
-    if (finite == 0) { lo = hi = v; }
-    else { if (v < lo) lo = v; if (v > hi) hi = v; }
-    sum += (double)v;
+    const T val = o[i];
+    if (!std::isfinite((double)val)) { ++nonfinite; continue; }
+    if (finite == 0) { lo = hi = val; }
+    else { if (val < lo) lo = val; if (val > hi) hi = val; }
+    sum += (double)val;
     ++finite;
   }
-  std::printf("  in=%-10s out numel=%lld  ", s.label().c_str(), n);
   if (finite > 0) {
     std::printf("min=");  print_elem(lo);
     std::printf(" max="); print_elem(hi);
@@ -350,20 +363,20 @@ inline void simple_signature(const T* o, long long n, const Shape& s,
     std::printf("min=n/a max=n/a mean=n/a");  // every element was non-finite
   }
   if (nonfinite) std::printf(" nonfinite=%lld", nonfinite);
-  std::printf("\n");
 
   if (out_row > 0) {
     // The flat buffer is [rows][out_row]; show the head and tail rows so a
     // per-row kernel (e.g. one value per thread) is eyeballable.
+    std::printf("\n");
     const int w = out_row;
     const long long rows = n / w, show = 3;  // `show` rows at each end
     for (long long r = 0; r < rows; ++r) {
       if (rows > 2 * show && r == show) {
-        std::printf("      ... (%lld rows elided)\n", rows - 2 * show);
+        std::printf("          ... (%lld rows elided)\n", rows - 2 * show);
         r = rows - show - 1;  // jump to the tail
         continue;
       }
-      std::printf("      row %-6lld [", r);
+      std::printf("          row %-6lld [", r);
       for (int j = 0; j < w; ++j) {
         if (j) std::printf(", ");
         print_elem(o[r * w + j]);
@@ -371,10 +384,10 @@ inline void simple_signature(const T* o, long long n, const Shape& s,
       std::printf("]\n");
     }
   } else {
-    // No row structure declared -> a flat head preview, so the signature carries
-    // concrete values, not just aggregates.
+    // Flat head preview on the same line, so the signature carries concrete
+    // values, not just aggregates.
     const long long k = std::min<long long>(n, 5);
-    std::printf("      head=[");
+    std::printf("  head=[");
     for (long long i = 0; i < k; ++i) {
       if (i) std::printf(", ");
       print_elem(o[i]);
@@ -384,10 +397,31 @@ inline void simple_signature(const T* o, long long n, const Shape& s,
   }
 }
 
-// `simple` mode: launch one variant across a handful of sizes and print a quick
-// signature of what came back -- min/max/mean + a head preview for a tensor, the
-// raw values for a scalar/tiny output. No CPU compare, no timing; the fast "did
-// it produce something sane" loop, distinct from the `test` correctness gate.
+// Print the output block, reinterpreting the fetched bytes per out_dtype.
+inline void print_output_block(const Spec& spec, const void* o, long long n) {
+  switch (spec.out_dtype) {
+    case Dtype::I32:
+      simple_block("out", static_cast<const int*>(o), n, spec.out_row); break;
+    case Dtype::U32:
+      simple_block("out", static_cast<const unsigned*>(o), n, spec.out_row); break;
+    case Dtype::I64:
+      simple_block("out", static_cast<const long long*>(o), n, spec.out_row); break;
+    case Dtype::U64:
+      simple_block("out", static_cast<const unsigned long long*>(o), n,
+                   spec.out_row); break;
+    case Dtype::F64:
+      simple_block("out", static_cast<const double*>(o), n, spec.out_row); break;
+    case Dtype::F32:
+    default:
+      simple_block("out", static_cast<const float*>(o), n, spec.out_row); break;
+  }
+}
+
+// `simple` mode: launch one variant across a handful of sizes and, per size,
+// print a signature of each input and the output -- min/max/mean + a head
+// preview (or the raw values, when tiny). Seeing the inputs beside the output
+// makes a transform like c = a + b checkable by eye. No CPU compare, no timing;
+// the fast "did it produce something sane" loop, distinct from the `test` gate.
 inline int run_simple(const Spec& spec, const char* want) {
   const Variant* v = &spec.variants.front();
   if (want) {
@@ -410,32 +444,21 @@ inline int run_simple(const Spec& spec, const char* want) {
     v->launch(buf.args());
     KERNEL_CHECK();
     buf.fetch();
-    const long long n = buf.out_n();
-    // host_out() is staged as float* but holds raw bytes -- reinterpret per the
-    // declared output type before printing.
-    const void* o = buf.host_out();
-    switch (spec.out_dtype) {
-      case Dtype::I32:
-        simple_signature(static_cast<const int*>(o), n, s, spec.out_row);
-        break;
-      case Dtype::U32:
-        simple_signature(static_cast<const unsigned*>(o), n, s, spec.out_row);
-        break;
-      case Dtype::I64:
-        simple_signature(static_cast<const long long*>(o), n, s, spec.out_row);
-        break;
-      case Dtype::U64:
-        simple_signature(static_cast<const unsigned long long*>(o), n, s,
-                         spec.out_row);
-        break;
-      case Dtype::F64:
-        simple_signature(static_cast<const double*>(o), n, s, spec.out_row);
-        break;
-      case Dtype::F32:
-      default:
-        simple_signature(static_cast<const float*>(o), n, s, spec.out_row);
-        break;
+    const long long in_n = s.numel();
+    const long long out_n = buf.out_n();
+    std::printf("  in=%-10s out numel=%lld\n", s.label().c_str(), out_n);
+    // Inputs are always float in the buffer model (seeded-RNG filled), and the
+    // host copy is what was uploaded, untouched by the kernel -- so show each one
+    // next to the output. A kernel with 0 inputs (e.g. an index dump) prints none.
+    const float* const* ins = buf.host_in();
+    for (int k = 0; k < spec.inputs; ++k) {
+      char label[16];
+      std::snprintf(label, sizeof label, "in[%d]", k);
+      simple_block(label, ins[k], in_n);
     }
+    // host_out() is staged as float* but holds raw bytes -- reinterpreted per the
+    // declared output type inside print_output_block.
+    print_output_block(spec, buf.host_out(), out_n);
   }
   return 0;
 }

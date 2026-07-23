@@ -7,17 +7,14 @@ __global__ void vecadd_contiguous_per_thread(
     const float* __restrict__ b,
     float* __restrict__ c,
     int n) {
-  int tid = blockIdx.x * blockDim.x + threadIdx.x;
-  int total_threads = gridDim.x * blockDim.x;
-
-  int chunk = (n + total_threads - 1) / total_threads;
-
-  int start = tid * chunk;
-  int end = min(start + chunk, n);
-
-  for (int i = start; i < end; ++i) {
-    c[i] = a[i] + b[i];
-  }
+      int global_thread_id = blockDim.x * blockIdx.x + threadIdx.x;
+      int total_threads = gridDim.x * blockDim.x;
+      int chunk_size = (n + total_threads - 1) / total_threads;
+      int start_point = global_thread_id * chunk_size;
+      int end_point = min(start_point + chunk_size, n);
+      for (int i = start_point; i<end_point; i++){
+        c[i] = a[i] + b[i];
+      }
 }
 
 static void vecadd_cpu(const float* const* in, float* out, lab::Shape s) {

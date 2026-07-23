@@ -55,9 +55,6 @@ fi
 GIT_SHA=$(git describe --always --dirty 2>/dev/null || echo unknown)
 
 if [ "$SIMPLE" = "1" ]; then
-  # The lean path: one kernel, ~5 sizes, output signature only. No benchmark,
-  # no sanitizer, no nsys, and nothing written to results/ -- so there is
-  # nothing to pull. The output printed below IS the deliverable.
   [ -n "$FILTER" ] || { echo "--simple needs a kernel (e.g. ./local/session.sh --simple 01_vecadd_ai)"; exit 1; }
   echo "▸ simple run"
   "${SSH[@]}" "root@$HOST" \

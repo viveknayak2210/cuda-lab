@@ -3,7 +3,7 @@
 // no CPU reference, no benchmark. Run it with `simple`.
 #include "runner.cuh"
 
-static constexpr int BLOCK = 256;
+static constexpr int BLOCK = 128;
 
 __global__ void printall(const float* __restrict__ in,
                          float (*__restrict__ out)[4]) {

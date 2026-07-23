@@ -5,7 +5,7 @@ static constexpr int BLOCK = 256;
 __global__ void sum_reduction_naive(float const * __restrict__ in, float* __restrict__ out, int n){
   int tid = blockIdx.x * blockDim.x + threadIdx.x;
   if (tid<n){
-    *out += in[tid];
+    atomicAdd(out, in[tid]);
   }
 }
 

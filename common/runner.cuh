@@ -232,6 +232,19 @@ class Buffers {
       CUDA_CHECK(cudaMemcpy(h_out_.data(), d_out_, out_bytes_,
                             cudaMemcpyDeviceToHost));
   }
+  // Event-timed median of re-uploading every input host->device. The constructor
+  // already did this copy once; simple mode calls this to report the H2D cost
+  // next to the kernel time. Returns 0 for an empty shape (nothing to copy).
+  float time_h2d_ms() const {
+    if (n_ == 0 || d_in_.empty()) return 0.f;
+    return time_kernel_ms(
+        [&] {
+          for (size_t k = 0; k < d_in_.size(); ++k)
+            cudaMemcpy(d_in_[k], h_in_[k].data(), n_ * sizeof(float),
+                       cudaMemcpyHostToDevice);
+        },
+        /*warmup=*/2, /*repeats=*/10);
+  }
 
   const float* const* host_in() const { return h_in_ptr_.data(); }
   float* host_ref() { return h_ref_.data(); }
@@ -397,68 +410,114 @@ inline void simple_block(const char* label, const T* o, long long n,
   }
 }
 
-// Print the output block, reinterpreting the fetched bytes per out_dtype.
-inline void print_output_block(const Spec& spec, const void* o, long long n) {
+// Print the output block, reinterpreting the fetched bytes per out_dtype. The
+// label defaults to "out"; multi-variant simple runs pass the variant name so
+// each variant's output is tagged.
+inline void print_output_block(const Spec& spec, const void* o, long long n,
+                               const char* label = "out") {
   switch (spec.out_dtype) {
     case Dtype::I32:
-      simple_block("out", static_cast<const int*>(o), n, spec.out_row); break;
+      simple_block(label, static_cast<const int*>(o), n, spec.out_row); break;
     case Dtype::U32:
-      simple_block("out", static_cast<const unsigned*>(o), n, spec.out_row); break;
+      simple_block(label, static_cast<const unsigned*>(o), n, spec.out_row); break;
     case Dtype::I64:
-      simple_block("out", static_cast<const long long*>(o), n, spec.out_row); break;
+      simple_block(label, static_cast<const long long*>(o), n, spec.out_row); break;
     case Dtype::U64:
-      simple_block("out", static_cast<const unsigned long long*>(o), n,
+      simple_block(label, static_cast<const unsigned long long*>(o), n,
                    spec.out_row); break;
     case Dtype::F64:
-      simple_block("out", static_cast<const double*>(o), n, spec.out_row); break;
+      simple_block(label, static_cast<const double*>(o), n, spec.out_row); break;
     case Dtype::F32:
     default:
-      simple_block("out", static_cast<const float*>(o), n, spec.out_row); break;
+      simple_block(label, static_cast<const float*>(o), n, spec.out_row); break;
   }
 }
 
-// `simple` mode: launch one variant across a handful of sizes and, per size,
-// print a signature of each input and the output -- min/max/mean + a head
-// preview (or the raw values, when tiny). Seeing the inputs beside the output
-// makes a transform like c = a + b checkable by eye. No CPU compare, no timing;
-// the fast "did it produce something sane" loop, distinct from the `test` gate.
+// `simple` mode: across a handful of sizes, print a signature of each input and
+// each variant's output -- min/max/mean + a head preview (or the raw values,
+// when tiny) -- so a transform like c = a + b is checkable by eye. A specific
+// variant runs alone; an unspecified variant runs EVERY variant in the file.
+// No CPU compare (unverified), but it does time each run and ends with an
+// N x variant latency table (H2D once per size, kernel per variant).
 inline int run_simple(const Spec& spec, const char* want) {
-  const Variant* v = &spec.variants.front();
+  // Unspecified -> every variant; specified -> just that one.
+  std::vector<const Variant*> vars;
   if (want) {
-    v = nullptr;
     for (const Variant& c : spec.variants)
-      if (c.name == want) v = &c;
-    if (!v) {
+      if (c.name == want) vars.push_back(&c);
+    if (vars.empty()) {
       std::fprintf(stderr, "unknown variant '%s'\n", want);
       return 2;
     }
+  } else {
+    for (const Variant& c : spec.variants) vars.push_back(&c);
   }
+
   std::vector<Shape> shapes =
       spec.simple_shapes.empty() ? simple_ramp(spec.test_shapes)
                                  : spec.simple_shapes;
-  std::printf("simple: %s / %s -- %zu sizes (unverified)\n", spec.name.c_str(),
-              v->name.c_str(), shapes.size());
+  std::printf("simple: %s -- %zu variant(s) x %zu sizes (unverified)\n",
+              spec.name.c_str(), vars.size(), shapes.size());
+
+  // Latency table state: one H2D per size (variant-independent), one kernel
+  // time per (size, variant).
+  std::vector<std::string> lat_label;         // per size
+  std::vector<float> lat_h2d;                  // per size
+  std::vector<std::vector<float>> lat_kernel;  // [size][variant]
+
   for (Shape s : shapes) {
     Buffers buf(spec, s);
-    buf.clear_out();
-    v->launch(buf.args());
-    KERNEL_CHECK();
-    buf.fetch();
+    const Args a = buf.args();
     const long long in_n = s.numel();
     const long long out_n = buf.out_n();
+
+    // H2D is variant-independent -- measure it once per size.
+    const float h2d_ms = buf.time_h2d_ms();
+
     std::printf("  in=%-10s out numel=%lld\n", s.label().c_str(), out_n);
-    // Inputs are always float in the buffer model (seeded-RNG filled), and the
-    // host copy is what was uploaded, untouched by the kernel -- so show each one
-    // next to the output. A kernel with 0 inputs (e.g. an index dump) prints none.
+    // Inputs are always float in the buffer model (seeded-RNG filled) and shared
+    // by every variant, so print them once above the per-variant outputs. A
+    // kernel with 0 inputs (e.g. an index dump) prints none.
     const float* const* ins = buf.host_in();
     for (int k = 0; k < spec.inputs; ++k) {
       char label[16];
       std::snprintf(label, sizeof label, "in[%d]", k);
       simple_block(label, ins[k], in_n);
     }
-    // host_out() is staged as float* but holds raw bytes -- reinterpreted per the
-    // declared output type inside print_output_block.
-    print_output_block(spec, buf.host_out(), out_n);
+
+    std::vector<float> krow;
+    for (const Variant* v : vars) {
+      // Time BEFORE the clean run: the kernel timer relaunches without clearing,
+      // which would pile onto an atomic-accumulating output. Measure, then clear
+      // + launch once for the value we actually print.
+      const float kernel_ms =
+          time_kernel_ms([&] { v->launch(a); }, /*warmup=*/3, /*repeats=*/20);
+      buf.clear_out();
+      v->launch(a);
+      KERNEL_CHECK();
+      buf.fetch();
+      // host_out() is staged as float* but holds raw bytes -- reinterpreted per
+      // the declared output type. Tag it with the variant name.
+      print_output_block(spec, buf.host_out(), out_n, v->name.c_str());
+      krow.push_back(kernel_ms);
+    }
+    std::printf("      %-6s H2D=%.4f ms\n", "lat", h2d_ms);
+
+    lat_label.push_back(s.label());
+    lat_h2d.push_back(h2d_ms);
+    lat_kernel.push_back(std::move(krow));
+  }
+
+  // N x variant latency table: H2D once (shared), then one kernel column per
+  // variant. Kernel-agnostic -- reads the same for a sum, a transpose, etc.
+  std::printf("\nlatency (ms) -- %s, N x variant\n", spec.name.c_str());
+  std::printf("  %-12s %11s", "N", "H2D");
+  for (const Variant* v : vars) std::printf(" %13s", v->name.c_str());
+  std::printf("\n");
+  for (size_t i = 0; i < lat_label.size(); ++i) {
+    std::printf("  %-12s %11.4f", lat_label[i].c_str(), lat_h2d[i]);
+    for (float k : lat_kernel[i]) std::printf(" %13.4f", k);
+    std::printf("\n");
   }
   return 0;
 }

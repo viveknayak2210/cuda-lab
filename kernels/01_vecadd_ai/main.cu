@@ -21,6 +21,7 @@ __global__ void vecadd_gridstride(const float* __restrict__ a,
     c[i] = a[i] + b[i];
 }
 
+
 static void vecadd_cpu(const float* const* in, float* out, lab::Shape s) {
   for (int i = 0; i < s.w; ++i) out[i] = in[0][i] + in[1][i];
 }

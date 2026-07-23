@@ -25,12 +25,14 @@ SSH=(ssh -p "$PORT" -i "${KEY/#\~/$HOME}" \
      -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
      -o ControlMaster=auto -o ControlPath=/tmp/cm-runpod -o ControlPersist=10m)
 
-BOOT=0; STOP=0; FILTER=""
+BOOT=0; STOP=0; SIMPLE=0; FILTER=""; VARIANT=""
 for a in "$@"; do
   case "$a" in
     --boot) BOOT=1 ;;
     --stop) STOP=1 ;;
-    *) FILTER="$a" ;;
+    --simple) SIMPLE=1 ;;
+    # first bare word is the kernel; a second (only read by --simple) is a variant
+    *) if [ -z "$FILTER" ]; then FILTER="$a"; else VARIANT="$a"; fi ;;
   esac
 done
 
@@ -48,37 +50,49 @@ if [ "$BOOT" = "1" ]; then
   "${SSH[@]}" "root@$HOST" "cd $REMOTE && chmod +x scripts/*.sh && ./scripts/bootstrap.sh"
 fi
 
-echo "▸ run"
-# Forward the profile/sanitize toggles into the remote shell (env doesn't cross
-# ssh on its own). Both default off -> the fast path. GIT_SHA is computed here
-# because the synced tree on the pod has no .git; make bakes it into the
-# binaries so every bench.csv row records the source version that produced it.
+# GIT_SHA is computed here because the synced tree on the pod has no .git; make
+# bakes it into the binaries so provenance stays honest.
 GIT_SHA=$(git describe --always --dirty 2>/dev/null || echo unknown)
-"${SSH[@]}" "root@$HOST" \
-  "cd $REMOTE && GIT_SHA=$GIT_SHA PROFILE=${PROFILE:-0} FULL_SANITIZE=${FULL_SANITIZE:-0} NSYS_TRACE=${NSYS_TRACE:-1} ./scripts/run.sh $FILTER" \
-  || echo "(run reported failures)"
 
-echo "▸ pull results"
-# Pulls everything the run wrote, including the default nsys timeline
-# (results/<kernel>.nsys-rep + .nsys.txt) and any opt-in .ncu-rep.
-mkdir -p results
-# bench.csv is the ONE file that must survive the pull. A pod only ever holds
-# the rows it produced itself, so a straight rsync silently replaces the local
-# history the moment you move to a new pod. Stash it, pull, then merge: local
-# rows first, then any pod row not already present (exact-line dedup, which is
-# also what makes a second pull of the same pod idempotent).
-BENCH=results/bench.csv
-STASH=$(mktemp -d)
-trap 'rm -rf "$STASH"' EXIT
-[ -f "$BENCH" ] && cp "$BENCH" "$STASH/local.csv"
+if [ "$SIMPLE" = "1" ]; then
+  # The lean path: one kernel, ~5 sizes, output signature only. No benchmark,
+  # no sanitizer, no nsys, and nothing written to results/ -- so there is
+  # nothing to pull. The output printed below IS the deliverable.
+  [ -n "$FILTER" ] || { echo "--simple needs a kernel (e.g. ./local/session.sh --simple 01_vecadd_ai)"; exit 1; }
+  echo "▸ simple run"
+  "${SSH[@]}" "root@$HOST" \
+    "cd $REMOTE && chmod +x scripts/*.sh && GIT_SHA=$GIT_SHA ./scripts/simple.sh $FILTER $VARIANT" \
+    || echo "(simple run reported failures)"
+else
+  echo "▸ run"
+  # Forward the profile/sanitize toggles into the remote shell (env doesn't cross
+  # ssh on its own). Both default off -> the fast path.
+  "${SSH[@]}" "root@$HOST" \
+    "cd $REMOTE && GIT_SHA=$GIT_SHA PROFILE=${PROFILE:-0} FULL_SANITIZE=${FULL_SANITIZE:-0} NSYS_TRACE=${NSYS_TRACE:-1} ./scripts/run.sh $FILTER" \
+    || echo "(run reported failures)"
 
-rsync -rlptz -e "${SSH[*]}" "root@$HOST:$REMOTE/results/" ./results/
+  echo "▸ pull results"
+  # Pulls everything the run wrote, including the default nsys timeline
+  # (results/<kernel>.nsys-rep + .nsys.txt) and any opt-in .ncu-rep.
+  mkdir -p results
+  # bench.csv is the ONE file that must survive the pull. A pod only ever holds
+  # the rows it produced itself, so a straight rsync silently replaces the local
+  # history the moment you move to a new pod. Stash it, pull, then merge: local
+  # rows first, then any pod row not already present (exact-line dedup, which is
+  # also what makes a second pull of the same pod idempotent).
+  BENCH=results/bench.csv
+  STASH=$(mktemp -d)
+  trap 'rm -rf "$STASH"' EXIT
+  [ -f "$BENCH" ] && cp "$BENCH" "$STASH/local.csv"
 
-if [ -s "$STASH/local.csv" ] && [ -f "$BENCH" ]; then
-  { cat "$STASH/local.csv"; tail -n +2 "$BENCH"; } \
-    | awk 'NR==1 || !seen[$0]++' > "$STASH/merged.csv"
-  mv "$STASH/merged.csv" "$BENCH"
-  echo "  bench.csv: $(($(wc -l < "$BENCH") - 1)) rows total"
+  rsync -rlptz -e "${SSH[*]}" "root@$HOST:$REMOTE/results/" ./results/
+
+  if [ -s "$STASH/local.csv" ] && [ -f "$BENCH" ]; then
+    { cat "$STASH/local.csv"; tail -n +2 "$BENCH"; } \
+      | awk 'NR==1 || !seen[$0]++' > "$STASH/merged.csv"
+    mv "$STASH/merged.csv" "$BENCH"
+    echo "  bench.csv: $(($(wc -l < "$BENCH") - 1)) rows total"
+  fi
 fi
 
 if [ "$STOP" = "1" ]; then
@@ -87,4 +101,8 @@ if [ "$STOP" = "1" ]; then
     echo "  !! could not auto-stop -- CHECK THE DASHBOARD"
 fi
 
-echo "▸ done. results in ./results/ -- open the .nsys-rep in Nsight Systems.app (.ncu-rep in Nsight Compute.app if you ran PROFILE=1)."
+if [ "$SIMPLE" = "1" ]; then
+  echo "▸ done (simple: output printed above, no artifacts pulled)."
+else
+  echo "▸ done. results in ./results/ -- open the .nsys-rep in Nsight Systems.app (.ncu-rep in Nsight Compute.app if you ran PROFILE=1)."
+fi

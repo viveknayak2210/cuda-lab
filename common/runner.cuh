@@ -81,7 +81,9 @@ struct Spec {
   double bytes_per_elem;    // DRAM traffic per element -- the roofline divisor
   std::function<void(const float* const* in, float* out, Shape)> reference;
   std::function<long long(Shape)> out_numel;  // default: Shape::numel()
+  int out_row = 0;  // >0: simple mode also dumps the first/last rows of this width
   std::vector<Shape> test_shapes, bench_shapes;
+  std::vector<Shape> simple_shapes;  // `simple` mode; empty -> sampled from test_shapes
   std::vector<Variant> variants;
 
   Spec(std::string kernel, int n_inputs, double bytes_per_elem)
@@ -226,6 +228,85 @@ inline void run_bench(const Spec& spec) {
   }
 }
 
+// The ~5 sizes `simple` mode sweeps when a kernel doesn't set simple_shapes: an
+// increasing ramp sampled from test_shapes, so it inherits the kernel's own 1-D
+// or 2-D shape and drops the empty case. Deterministic -- no timing, no compare.
+inline std::vector<Shape> simple_ramp(const std::vector<Shape>& from, int k = 5) {
+  std::vector<Shape> v;
+  for (Shape s : from)
+    if (s.numel() > 0) v.push_back(s);
+  std::sort(v.begin(), v.end(),
+            [](Shape a, Shape b) { return a.numel() < b.numel(); });
+  v.erase(std::unique(v.begin(), v.end(),
+                      [](Shape a, Shape b) { return a.numel() == b.numel(); }),
+          v.end());
+  if ((int)v.size() <= k) return v;
+  std::vector<Shape> out;
+  for (int i = 0; i < k; ++i)
+    out.push_back(v[(long long)i * (v.size() - 1) / (k - 1)]);
+  return out;
+}
+
+// `simple` mode: launch one variant across a handful of sizes and print a quick
+// signature of what came back -- shape + mean for a tensor, the raw values for a
+// scalar/tiny output. No CPU compare, no timing; the fast "did it produce
+// something sane" loop, distinct from the `test` correctness gate.
+inline int run_simple(const Spec& spec, const char* want) {
+  const Variant* v = &spec.variants.front();
+  if (want) {
+    v = nullptr;
+    for (const Variant& c : spec.variants)
+      if (c.name == want) v = &c;
+    if (!v) {
+      std::fprintf(stderr, "unknown variant '%s'\n", want);
+      return 2;
+    }
+  }
+  std::vector<Shape> shapes =
+      spec.simple_shapes.empty() ? simple_ramp(spec.test_shapes)
+                                 : spec.simple_shapes;
+  std::printf("simple: %s / %s -- %zu sizes (unverified)\n", spec.name.c_str(),
+              v->name.c_str(), shapes.size());
+  for (Shape s : shapes) {
+    Buffers buf(spec, s);
+    buf.clear_out();
+    v->launch(buf.args());
+    KERNEL_CHECK();
+    buf.fetch();
+    const long long n = buf.out_n();
+    const float* o = buf.host_out();
+    if (n <= 8) {  // scalar / tiny output -> the values themselves
+      std::printf("  in=%-10s out numel=%lld  vals=[", s.label().c_str(), n);
+      for (long long i = 0; i < n; ++i)
+        std::printf("%s%.6g", i ? ", " : "", o[i]);
+      std::printf("]\n");
+    } else {  // tensor -> shape + mean, plus an optional first/last-rows dump
+      double sum = 0.0;
+      for (long long i = 0; i < n; ++i) sum += o[i];
+      std::printf("  in=%-10s out numel=%lld  mean=%.6g\n", s.label().c_str(),
+                  n, sum / (double)n);
+      // out_row>0 means the flat buffer is [rows][out_row]; show the head and
+      // tail so a per-row kernel (e.g. one value per thread) is eyeballable.
+      if (spec.out_row > 0) {
+        const int w = spec.out_row;
+        const long long rows = n / w, show = 3;  // `show` rows at each end
+        for (long long r = 0; r < rows; ++r) {
+          if (rows > 2 * show && r == show) {
+            std::printf("      ... (%lld rows elided)\n", rows - 2 * show);
+            r = rows - show - 1;  // jump to the tail
+            continue;
+          }
+          std::printf("      row %-6lld [", r);
+          for (int j = 0; j < w; ++j)
+            std::printf("%s%g", j ? ", " : "", o[r * w + j]);
+          std::printf("]\n");
+        }
+      }
+    }
+  }
+  return 0;
+}
+
 // One launch, largest bench shape
 inline int run_profile(const Spec& spec, const char* want) {
   const Variant* v = &spec.variants.front();
@@ -245,18 +326,40 @@ inline int run_profile(const Spec& spec, const char* want) {
 }
 
 inline int run(int argc, char** argv, const Spec& spec) {
-  if (!spec.reference || spec.variants.empty() || spec.test_shapes.empty() ||
-      spec.bench_shapes.empty()) {
-    std::fprintf(stderr, "%s: incomplete Spec (reference/variants/shapes)\n",
+  const char* mode = argc > 1 ? argv[1] : "test";
+
+  // Every mode has to have something to launch.
+  if (spec.variants.empty()) {
+    std::fprintf(stderr, "%s: no variants\n", spec.name.c_str());
+    return 2;
+  }
+
+  // `simple` is the lightweight path -- no CPU compare, no timing -- so it needs
+  // neither a reference nor bench_shapes, only something to size the sweep. That
+  // lets a kernel be simple-only, with no test/bench wiring at all.
+  if (!std::strcmp(mode, "simple")) {
+    if (spec.simple_shapes.empty() && spec.test_shapes.empty()) {
+      std::fprintf(stderr, "%s: simple needs simple_shapes or test_shapes\n",
+                   spec.name.c_str());
+      return 2;
+    }
+    return run_simple(spec, argc > 2 ? argv[2] : nullptr);
+  }
+
+  // test/bench/profile are the full contract: a reference plus both shape lists.
+  if (!spec.reference || spec.test_shapes.empty() || spec.bench_shapes.empty()) {
+    std::fprintf(stderr,
+                 "%s: incomplete Spec (reference/test_shapes/bench_shapes)\n",
                  spec.name.c_str());
     return 2;
   }
-  const char* mode = argc > 1 ? argv[1] : "test";
   if (!std::strcmp(mode, "test")) return run_tests(spec);
   if (!std::strcmp(mode, "bench")) { run_bench(spec); return 0; }
   if (!std::strcmp(mode, "profile"))
     return run_profile(spec, argc > 2 ? argv[2] : nullptr);
-  std::fprintf(stderr, "usage: %s [test|bench|profile [variant]]\n", argv[0]);
+  std::fprintf(stderr,
+               "usage: %s [test|bench|profile [variant]|simple [variant]]\n",
+               argv[0]);
   return 2;
 }
 
